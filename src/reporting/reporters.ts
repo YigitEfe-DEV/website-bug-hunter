@@ -1,25 +1,44 @@
-import type { Confidence, ScanResult, FindingType } from '../types/index.js';
+import type { Confidence, Finding, FindingType, ScanResult } from '../types/index.js';
 
 export function renderJson(result: ScanResult): string {
   return JSON.stringify(result, null, 2);
 }
 
+const SEVERITY_ORDER: Record<'error' | 'warning' | 'info', number> = { error: 0, warning: 1, info: 2 };
+const CONFIDENCE_ORDER: Record<Confidence, number> = { confirmed: 0, probable: 1, inconclusive: 2 };
+
 /**
- * Sort findings for an actionable report:
- *   1. errors first, then warnings, then notes
- *   2. within a severity, group by type
- *   3. within a type, stable by id
+ * Sort findings for an actionable report.
+ *   - default ("severity"): error → warning → info, then confirmed → probable → inconclusive,
+ *     then by type, then stable by id.
+ *   - "url": by page URL (locale-aware), stable by id.
  */
-export function sortFindingsForReport<
-  T extends { severity: 'error' | 'warning' | 'info'; type: string; id: string },
->(findings: T[]): T[] {
-  const sev = (s: string) => (s === 'error' ? 0 : s === 'warning' ? 1 : 2);
-  return [...findings].sort((a, b) => {
-    const sd = sev(a.severity) - sev(b.severity);
+export function sortFindingsForReport<T extends { severity: 'error' | 'warning' | 'info'; type: string; id: string }>(
+  findings: T[],
+  mode: 'severity' | 'url' = 'severity',
+): T[] {
+  const sorted = [...findings];
+  if (mode === 'url') {
+    sorted.sort((a, b) => {
+      const aPage = (a as unknown as { page?: string }).page ?? '';
+      const bPage = (b as unknown as { page?: string }).page ?? '';
+      const pd = aPage.localeCompare(bPage);
+      if (pd !== 0) return pd;
+      return a.id < b.id ? -1 : 1;
+    });
+    return sorted;
+  }
+  sorted.sort((a, b) => {
+    const sd = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
     if (sd !== 0) return sd;
+    const aConf = (a as unknown as { confidence?: Confidence }).confidence;
+    const bConf = (b as unknown as { confidence?: Confidence }).confidence;
+    const cd = (aConf ? CONFIDENCE_ORDER[aConf] : 0) - (bConf ? CONFIDENCE_ORDER[bConf] : 0);
+    if (cd !== 0) return cd;
     if (a.type !== b.type) return a.type < b.type ? -1 : 1;
     return a.id < b.id ? -1 : 1;
   });
+  return sorted;
 }
 
 export function renderText(result: ScanResult): string {
@@ -31,10 +50,11 @@ export function renderText(result: ScanResult): string {
   lines.push(`Pages scanned: ${result.pagesScanned}`);
   lines.push(`Pages failed:  ${result.pagesFailed}`);
   if (result.pagesSkipped) lines.push(`Pages skipped (robots.txt): ${result.pagesSkipped}`);
-  lines.push(`Findings:      ${result.findings.length}`);
   if (result.cache) {
-    lines.push(`Cache:         ${result.cache.linkProbes} link probes, ${result.cache.assetProbes} asset probes`);
+    const urlsChecked = result.cache.linkProbes + result.cache.assetProbes + result.pagesScanned;
+    lines.push(`URLs checked: ${urlsChecked} (${result.cache.linkProbes} link probes, ${result.cache.assetProbes} asset probes)`);
   }
+  lines.push(`Findings:      ${result.findings.length}`);
   if (result.budgetExhausted) {
     lines.push(`Budget:        EXHAUSTED (results may be incomplete)`);
   }
@@ -59,6 +79,7 @@ export function renderText(result: ScanResult): string {
   lines.push(
     `By confidence: ${confCounts.confirmed} confirmed · ${confCounts.probable} probable · ${confCounts.inconclusive} inconclusive`,
   );
+  lines.push(`Heuristic score: ${computeHealthScore(result.findings)} / 100 (project-specific, see HTML report for formula)`);
 
   const sorted = sortFindingsForReport(result.findings);
   const grouped = groupBy(sorted, (f) => f.type);
@@ -184,67 +205,116 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.substring(0, n - 1) + '…' : s;
 }
 
-export function renderHtml(result: ScanResult): string {
-  const escape = (s: string): string =>
-    s.replace(/[&<>"']/g, (c) => {
-      switch (c) {
-        case '&':
-          return '&amp;';
-        case '<':
-          return '&lt;';
-        case '>':
-          return '&gt;';
-        case '"':
-          return '&quot;';
-        default:
-          return '&#39;';
-      }
-    });
-  const bySeverity = (s: 'error' | 'warning' | 'info') =>
-    result.findings.filter((f) => f.severity === s).length;
-  const byConfidence = (c: Confidence) =>
-    result.findings.filter((f) => f.confidence === c).length;
-  const sorted = sortFindingsForReport(result.findings);
-  const findingsHtml = sorted
-    .map((f) => {
-      const detail = f.detail
-        ? `<details class="detail"><summary>Evidence</summary><pre>${escape(JSON.stringify(f.detail, null, 2))}</pre></details>`
-        : '';
-      const fix = f.fix
-        ? `<details class="fix" open><summary>Fix</summary><pre>${escape(f.fix)}</pre></details>`
-        : '';
-      const explanation = f.explanation
-        ? `<details class="why" open><summary>Why this matters</summary><p>${escape(f.explanation)}</p></details>`
-        : '';
-      const affected = f.affectedPages && f.affectedPages.length > 1
-        ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escape(p)}" rel="noopener">${escape(p)}</a></li>`).join('')}</ul></details>`
-        : '';
-      return `<article class="finding finding-${f.severity} confidence-${f.confidence}" data-type="${escape(f.type)}" data-confidence="${escape(f.confidence)}">
-  <header>
-    <span class="badge severity">${escape(f.severity)}</span>
-    <span class="badge confidence confidence-${f.confidence}">${escape(f.confidence)}</span>
-    <span class="type">${escape(f.type)}</span>
-  </header>
-  <p class="msg">${escape(f.message)}</p>
-  <p class="page"><a href="${escape(f.page)}" rel="noopener">${escape(f.page)}</a></p>
-  ${explanation}
-  ${fix}
-  ${detail}
-  ${affected}
-</article>`;
-    })
-    .join('\n');
+/**
+ * Heuristic health score. Project-specific, NOT an industry standard.
+ * Range 0-100. Higher is better.
+ *
+ *   start at 100
+ *   subtract 10 per confirmed error
+ *   subtract  5 per probable error
+ *   subtract  2 per inconclusive error
+ *   subtract  3 per confirmed warning
+ *   subtract  1 per probable warning
+ *   subtract  0.1 per any info finding
+ *   clamp to [0, 100]
+ *
+ * Inconclusive findings barely affect the score because the scanner
+ * could not verify them — penalising hard would punish users for
+ * transient timeouts.
+ */
+export function computeHealthScore(findings: Finding[]): number {
+  let score = 100;
+  for (const f of findings) {
+    if (f.severity === 'error') {
+      if (f.confidence === 'confirmed') score -= 10;
+      else if (f.confidence === 'probable') score -= 5;
+      else score -= 2;
+    } else if (f.severity === 'warning') {
+      if (f.confidence === 'confirmed') score -= 3;
+      else if (f.confidence === 'probable') score -= 1;
+    } else if (f.severity === 'info') {
+      score -= 0.1;
+    }
+  }
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
 
-  const cache = result.cache
-    ? `<div class="stat"><div class="v">${result.cache.linkProbes}</div><div class="l">link probes (cached)</div></div>`
-    : '';
+function scoreFormulaBreakdown(findings: Finding[]): {
+  confirmedErrors: number;
+  probableErrors: number;
+  inconclusiveErrors: number;
+  confirmedWarnings: number;
+  probableWarnings: number;
+  infos: number;
+} {
+  let confirmedErrors = 0, probableErrors = 0, inconclusiveErrors = 0;
+  let confirmedWarnings = 0, probableWarnings = 0, infos = 0;
+  for (const f of findings) {
+    if (f.severity === 'error') {
+      if (f.confidence === 'confirmed') confirmedErrors++;
+      else if (f.confidence === 'probable') probableErrors++;
+      else inconclusiveErrors++;
+    } else if (f.severity === 'warning') {
+      if (f.confidence === 'confirmed') confirmedWarnings++;
+      else if (f.confidence === 'probable') probableWarnings++;
+    } else if (f.severity === 'info') infos++;
+  }
+  return { confirmedErrors, probableErrors, inconclusiveErrors, confirmedWarnings, probableWarnings, infos };
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+export function renderHtml(result: ScanResult): string {
+  const findings = result.findings || [];
+  const bySeverity = (s: 'error' | 'warning' | 'info') =>
+    findings.filter((f) => f.severity === s).length;
+  const byConfidence = (c: Confidence) =>
+    findings.filter((f) => f.confidence === c).length;
+
+  const linkProbes = (result.cache && result.cache.linkProbes) || 0;
+  const assetProbes = (result.cache && result.cache.assetProbes) || 0;
+  const urlsChecked = linkProbes + assetProbes + result.pagesScanned;
+
+  const score = computeHealthScore(findings);
+  const scoreClass = score >= 80 ? 'score-good' : score >= 50 ? 'score-mid' : 'score-bad';
+  const startedAt = new Date(result.startedAt).toISOString();
+  const duration = ((result.durationMs || 0) / 1000).toFixed(2);
+
+  const partial = result.budgetExhausted || (result.pagesFailed || 0) > 0;
+  const statusState = partial ? 'partial' : 'success';
+  const statusLabel = partial ? 'partial' : 'complete';
+
+  const sorted = sortFindingsForReport(findings);
+  const findingsHtml = sorted.map((f, i) => renderFindingCard(f, i)).join('\n');
+
+  // Unique types for the type-filter dropdown
+  const types = [...new Set(findings.map((f) => f.type))].sort();
+
+  // Pre-rendered script — embeds the report so the page is self-contained
+  // AND the filter/sort UI works without any network call.
+  const reportJson = JSON.stringify(result);
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WBH report — ${escape(result.target)}</title>
+  <title>WBH report — ${escapeHtml(result.target)}</title>
   <style>
     :root {
       --bg: #0f1115;
@@ -259,70 +329,97 @@ export function renderHtml(result: ScanResult): string {
       --probable: #74c0fc;
       --inconclusive: #8c93a3;
       --link: #8ab4ff;
+      --good: #51cf66;
+      --mid: #f5c84b;
+      --bad: #ff6b6b;
     }
     @media (prefers-color-scheme: light) {
       :root {
-        --bg: #fafbfc;
-        --card: #ffffff;
-        --border: #e6e8ec;
-        --text: #1a1d22;
-        --muted: #5a6170;
-        --error: #c92a2a;
-        --warning: #b07b00;
-        --info: #1971c2;
-        --confirmed: #2b8a3e;
-        --probable: #1971c2;
-        --inconclusive: #5a6170;
-        --link: #1864ab;
+        --bg: #fafbfc; --card: #ffffff; --border: #e6e8ec; --text: #1a1d22;
+        --muted: #5a6170; --error: #c92a2a; --warning: #b07b00; --info: #1971c2;
+        --confirmed: #2b8a3e; --probable: #1971c2; --inconclusive: #5a6170;
+        --link: #1864ab; --good: #2b8a3e; --mid: #b07b00; --bad: #c92a2a;
       }
     }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--text); }
-    header.top { padding: 24px; border-bottom: 1px solid var(--border); }
+    header.top {
+      padding: 24px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+    }
     header.top h1 { margin: 0 0 8px; font-size: 18px; }
     header.top .meta { color: var(--muted); font-size: 13px; word-break: break-all; }
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; padding: 16px 24px; }
-    .summary .stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
-    .summary .stat .v { font-size: 24px; font-weight: 600; }
-    .summary .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px; font-size: 12px;
+      border: 1px solid var(--border); background: var(--card); color: var(--muted);
+    }
+    .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .status-pill[data-state="success"] .dot { background: var(--good); }
+    .status-pill[data-state="partial"] .dot { background: var(--mid); }
+    .status-banner {
+      margin: 16px 24px 0; padding: 12px 16px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--card); font-size: 13px;
+    }
+    .status-banner.warn { border-color: var(--warning); background: rgba(245,200,75,0.08); }
+    .status-banner.hide { display: none; }
+    .summary {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px; padding: 16px 24px;
+    }
+    .stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; position: relative; }
+    .stat .v { font-size: 24px; font-weight: 600; line-height: 1.1; }
+    .stat .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
     .stat.error .v { color: var(--error); }
     .stat.warning .v { color: var(--warning); }
     .stat.info .v { color: var(--info); }
     .stat.confirmed .v { color: var(--confirmed); }
     .stat.probable .v { color: var(--probable); }
     .stat.inconclusive .v { color: var(--inconclusive); }
+    .stat .info-icon {
+      position: absolute; top: 8px; right: 8px; width: 16px; height: 16px;
+      border-radius: 50%; background: var(--border); color: var(--muted);
+      font-size: 11px; font-weight: 600; display: inline-flex;
+      align-items: center; justify-content: center; cursor: help; user-select: none;
+    }
+    .stat.score-good .v { color: var(--good); }
+    .stat.score-mid .v { color: var(--mid); }
+    .stat.score-bad .v { color: var(--bad); }
     .controls {
-      padding: 0 24px 12px;
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
+      padding: 0 24px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
     }
-    .controls button {
-      background: var(--card);
-      border: 1px solid var(--border);
-      color: var(--text);
-      border-radius: 6px;
-      padding: 6px 12px;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    .controls button.active { background: var(--info); color: var(--bg); border-color: var(--info); }
+    .controls button,
+    .controls select,
+    .controls input[type="text"],
     .controls input[type="search"] {
-      flex: 1;
-      min-width: 200px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      color: var(--text);
-      border-radius: 6px;
-      padding: 6px 10px;
-      font-size: 13px;
+      background: var(--card); border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; padding: 6px 12px; font-size: 13px;
+    }
+    .controls select { cursor: pointer; max-width: 200px; }
+    .controls button { cursor: pointer; }
+    .controls button.active { background: var(--info); color: var(--bg); border-color: var(--info); }
+    .controls input[type="search"], .controls input[type="text"] { flex: 1; min-width: 160px; }
+    .controls .group-label {
+      color: var(--muted); font-size: 12px; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-right: 4px;
+    }
+    .controls .group { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+    .results-meta {
+      padding: 0 24px 12px; color: var(--muted); font-size: 13px;
+      display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline;
+    }
+    .results-meta .reset-filters {
+      background: var(--card); border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px;
     }
     main { padding: 8px 24px 64px; display: grid; gap: 12px; }
     .finding { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
-    .finding header { padding: 0; border: none; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
-    .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .badge.severity { background: rgba(255,255,255,0.04); }
+    .finding header {
+      padding: 0; border: none; display: flex; align-items: center;
+      gap: 8px; margin-bottom: 6px; flex-wrap: wrap;
+    }
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
     .finding-error .badge.severity { background: rgba(255,107,107,0.15); color: var(--error); }
     .finding-warning .badge.severity { background: rgba(245,200,75,0.15); color: var(--warning); }
     .finding-info .badge.severity { background: rgba(116,192,252,0.15); color: var(--info); }
@@ -335,15 +432,27 @@ export function renderHtml(result: ScanResult): string {
     .page a { color: var(--link); text-decoration: none; }
     .page a:hover { text-decoration: underline; }
     details { margin-top: 8px; }
-    details summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
-    details pre { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 12px; margin: 4px 0 0; }
+    details summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; padding: 2px 0; }
+    details pre {
+      background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;
+      overflow-x: auto; font-size: 12px; margin: 4px 0 0;
+      white-space: pre-wrap; word-break: break-word;
+    }
     details.fix summary { color: var(--info); }
     details.why summary { color: var(--probable); }
     details ul { margin: 4px 0; padding-left: 18px; font-size: 12px; }
+    details ul li { word-break: break-all; }
     .empty { padding: 48px 24px; text-align: center; color: var(--muted); }
+    .empty h3 { margin: 0 0 8px; color: var(--text); }
     footer { padding: 16px 24px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
     .hide { display: none !important; }
-    @media (max-width: 600px) {
+    @media (max-width: 720px) {
+      .controls { flex-direction: column; align-items: stretch; }
+      .controls .group { flex-wrap: wrap; }
+      .controls button, .controls select, .controls input { width: 100%; }
+      header.top { flex-direction: column; align-items: flex-start; }
+    }
+    @media (max-width: 480px) {
       .summary { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
@@ -351,72 +460,264 @@ export function renderHtml(result: ScanResult): string {
 <body>
   <header class="top">
     <h1>Website Bug Hunter — scan report</h1>
-    <div class="meta">Target <strong>${escape(result.target)}</strong> · ${escape(
-      new Date(result.startedAt).toISOString(),
-    )} · ${(result.durationMs / 1000).toFixed(2)}s${result.budgetExhausted ? ' · budget exhausted' : ''}</div>
+    <div class="meta">
+      Target <strong>${escapeHtml(result.target)}</strong> · ${escapeHtml(startedAt)} · ${duration}s
+    </div>
+    <span class="status-pill" data-state="${statusState}"><span class="dot"></span><span>${statusLabel}</span></span>
   </header>
+
+  ${result.budgetExhausted
+    ? `<div class="status-banner warn">Scan ended because the budget was exhausted (max pages, max depth, or max time). Results are incomplete.</div>`
+    : (result.pagesFailed && result.pagesFailed > 0
+      ? `<div class="status-banner warn">${result.pagesFailed} page(s) failed to load. Their findings are reported but the pages themselves were not crawled.</div>`
+      : '')
+  }
+
   <section class="summary">
     <div class="stat"><div class="v">${result.pagesScanned}</div><div class="l">pages scanned</div></div>
-    <div class="stat"><div class="v">${result.pagesFailed}</div><div class="l">pages failed</div></div>
-    ${result.pagesSkipped ? `<div class="stat"><div class="v">${result.pagesSkipped}</div><div class="l">pages skipped</div></div>` : ''}
+    <div class="stat"><div class="v">${result.pagesFailed || 0}</div><div class="l">pages failed</div></div>
+    ${result.pagesSkipped ? `<div class="stat"><div class="v">${result.pagesSkipped}</div><div class="l">pages skipped (robots)</div></div>` : ''}
+    <div class="stat"><div class="v">${urlsChecked}</div><div class="l">URLs checked</div></div>
     <div class="stat error"><div class="v">${bySeverity('error')}</div><div class="l">errors</div></div>
     <div class="stat warning"><div class="v">${bySeverity('warning')}</div><div class="l">warnings</div></div>
     <div class="stat info"><div class="v">${bySeverity('info')}</div><div class="l">info</div></div>
     <div class="stat confirmed"><div class="v">${byConfidence('confirmed')}</div><div class="l">confirmed</div></div>
     <div class="stat probable"><div class="v">${byConfidence('probable')}</div><div class="l">probable</div></div>
     <div class="stat inconclusive"><div class="v">${byConfidence('inconclusive')}</div><div class="l">inconclusive</div></div>
-    ${cache}
+    <div class="stat ${scoreClass}" title="Heuristic health score">
+      <div class="v">${score}</div>
+      <div class="l">heuristic score</div>
+      <span class="info-icon" title="Click for the formula">?</span>
+    </div>
+    <div class="stat"><div class="v">${duration}s</div><div class="l">duration</div></div>
   </section>
+
   <div class="controls">
-    <button data-filter="all" data-kind="severity" class="active">All</button>
-    <button data-filter="error" data-kind="severity">Errors</button>
-    <button data-filter="warning" data-kind="severity">Warnings</button>
-    <button data-filter="info" data-kind="severity">Info</button>
-    <button data-filter="confirmed" data-kind="confidence">Confirmed</button>
-    <button data-filter="probable" data-kind="confidence">Probable</button>
-    <button data-filter="inconclusive" data-kind="confidence">Inconclusive</button>
-    <input id="search" type="search" placeholder="Filter by message, URL, or type…" />
+    <span class="group">
+      <span class="group-label">Severity</span>
+      <button data-kind="severity" data-filter="all" class="active">All</button>
+      <button data-kind="severity" data-filter="error">Errors</button>
+      <button data-kind="severity" data-filter="warning">Warnings</button>
+      <button data-kind="severity" data-filter="info">Info</button>
+    </span>
+    <span class="group">
+      <span class="group-label">Confidence</span>
+      <button data-kind="confidence" data-filter="all">All</button>
+      <button data-kind="confidence" data-filter="confirmed">Confirmed</button>
+      <button data-kind="confidence" data-filter="probable">Probable</button>
+      <button data-kind="confidence" data-filter="inconclusive">Inconclusive</button>
+    </span>
+    <span class="group">
+      <span class="group-label">Type</span>
+      <select id="typeFilter"><option value="all">All</option>${types.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>
+    </span>
+    <span class="group">
+      <span class="group-label">Page</span>
+      <input id="pageFilter" type="text" placeholder="filter by page URL" />
+    </span>
+    <span class="group">
+      <span class="group-label">Search</span>
+      <input id="search" type="search" placeholder="search message, URL, or type…" />
+    </span>
+    <span class="group">
+      <span class="group-label">Sort</span>
+      <select id="sortBy">
+        <option value="severity">Severity</option>
+        <option value="url">Page URL</option>
+      </select>
+    </span>
   </div>
+
+  <div class="results-meta">
+    <span id="visibleCount">${findings.length}</span>
+    <span>of</span>
+    <span id="totalCount">${findings.length}</span>
+    <span>findings shown</span>
+    <button id="resetFilters" class="reset-filters hide">Reset filters</button>
+  </div>
+
   <main id="findings">
-    ${findingsHtml || '<div class="empty">No findings. ✓</div>'}
+    ${findingsHtml || '<div class="empty"><h3>✓ No issues found.</h3><p>The scan completed with no findings.</p></div>'}
   </main>
-  <footer>Generated by website-bug-hunter 0.1.0. SSRF protection: every HTTP request goes through <code>assertSafeUrl</code>.</footer>
+
+  <footer>
+    Generated by website-bug-hunter 0.1.0 · SSRF protection: every HTTP request goes through <code>assertSafeUrl</code>.
+  </footer>
+
   <script>
-    const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-    let currentFilter = 'all';
-    let currentFilterKind = 'severity'; // 'severity' or 'confidence'
-    let currentSearch = '';
+    'use strict';
+    const REPORT = ${reportJson};
+    const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
+    const CONFIDENCE_ORDER = { confirmed: 0, probable: 1, inconclusive: 2 };
+    const state = {
+      filter: { severity: 'all', confidence: 'all', type: 'all', page: '', search: '' },
+      sort: 'severity',
+    };
+
+    const els = {
+      typeFilter: document.getElementById('typeFilter'),
+      pageFilter: document.getElementById('pageFilter'),
+      search: document.getElementById('search'),
+      sortBy: document.getElementById('sortBy'),
+      resetFilters: document.getElementById('resetFilters'),
+      visibleCount: document.getElementById('visibleCount'),
+      totalCount: document.getElementById('totalCount'),
+      findings: document.getElementById('findings'),
+      summary: document.querySelector('.summary'),
+    };
+
+    function applyFilters() {
+      const f = state.filter;
+      const cards = document.querySelectorAll('.finding');
+      let visible = 0;
+      cards.forEach((card) => {
+        const sev = card.dataset.severity;
+        const conf = card.dataset.confidence;
+        const typ = card.dataset.type;
+        const page = (card.dataset.page || '').toLowerCase();
+        const matchesSeverity = f.severity === 'all' || sev === f.severity;
+        const matchesConfidence = f.confidence === 'all' || conf === f.confidence;
+        const matchesType = f.type === 'all' || typ === f.type;
+        const matchesPage = !f.page || page.includes(f.page);
+        const matchesSearch = !f.search || (card.textContent || '').toLowerCase().includes(f.search);
+        const matches = matchesSeverity && matchesConfidence && matchesType && matchesPage && matchesSearch;
+        card.classList.toggle('hide', !matches);
+        if (matches) visible++;
+      });
+      els.visibleCount.textContent = String(visible);
+      els.totalCount.textContent = String(cards.length);
+      els.resetFilters.classList.toggle(
+        'hide',
+        f.severity === 'all' && f.confidence === 'all' && f.type === 'all' && !f.page && !f.search,
+      );
+      const findings = REPORT.findings || [];
+      if (cards.length > 0 && visible === 0 && findings.length > 0) {
+        if (!document.getElementById('filterEmpty')) {
+          els.findings.insertAdjacentHTML(
+            'beforeend',
+            '<div id="filterEmpty" class="empty"><h3>No findings match the current filters.</h3><p>Try resetting filters or broadening the search.</p></div>',
+          );
+        }
+      } else {
+        const fe = document.getElementById('filterEmpty');
+        if (fe) fe.remove();
+      }
+    }
+
+    function sortFindings() {
+      const cards = Array.from(document.querySelectorAll('.finding'));
+      cards.sort((a, b) => {
+        if (state.sort === 'url') {
+          const pd = (a.dataset.page || '').localeCompare(b.dataset.page || '');
+          if (pd !== 0) return pd;
+        } else {
+          const sd = SEVERITY_ORDER[a.dataset.severity] - SEVERITY_ORDER[b.dataset.severity];
+          if (sd !== 0) return sd;
+          const cd = CONFIDENCE_ORDER[a.dataset.confidence] - CONFIDENCE_ORDER[b.dataset.confidence];
+          if (cd !== 0) return cd;
+          if (a.dataset.type !== b.dataset.type) return a.dataset.type < b.dataset.type ? -1 : 1;
+        }
+        return 0;
+      });
+      // Re-append in new order
+      const frag = document.createDocumentFragment();
+      cards.forEach((c) => frag.appendChild(c));
+      els.findings.appendChild(frag);
+    }
+
     document.querySelectorAll('.controls button[data-filter]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.controls button[data-filter]').forEach((b) => b.classList.remove('active'));
+        const kind = btn.dataset.kind;
+        const value = btn.dataset.filter;
+        if (kind === 'severity') state.filter.severity = value;
+        if (kind === 'confidence') state.filter.confidence = value;
+        document.querySelectorAll('.controls button[data-kind="' + kind + '"]').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        currentFilter = btn.dataset.filter || 'all';
-        currentFilterKind = btn.dataset.kind || 'severity';
         applyFilters();
       });
     });
-    document.getElementById('search').addEventListener('input', (e) => {
-      currentSearch = e.target.value.toLowerCase();
+    els.typeFilter.addEventListener('change', (e) => { state.filter.type = e.target.value; applyFilters(); });
+    els.pageFilter.addEventListener('input', (e) => { state.filter.page = e.target.value.trim().toLowerCase(); applyFilters(); });
+    els.search.addEventListener('input', (e) => { state.filter.search = e.target.value.trim().toLowerCase(); applyFilters(); });
+    els.sortBy.addEventListener('change', (e) => { state.sort = e.target.value; sortFindings(); });
+    els.resetFilters.addEventListener('click', () => {
+      state.filter = { severity: 'all', confidence: 'all', type: 'all', page: '', search: '' };
+      state.sort = 'severity';
+      document.querySelectorAll('.controls button[data-kind="severity"]').forEach((b) => b.classList.toggle('active', b.dataset.filter === 'all'));
+      document.querySelectorAll('.controls button[data-kind="confidence"]').forEach((b) => b.classList.remove('active'));
+      const fc = document.querySelector('.controls button[data-kind="confidence"][data-filter="all"]');
+      if (fc) fc.classList.add('active');
+      els.typeFilter.value = 'all';
+      els.pageFilter.value = '';
+      els.search.value = '';
+      els.sortBy.value = 'severity';
+      sortFindings();
       applyFilters();
     });
-    function applyFilters() {
-      const cards = document.querySelectorAll('.finding');
-      cards.forEach((card) => {
-        const sev = card.classList.contains('finding-error') ? 'error'
-          : card.classList.contains('finding-warning') ? 'warning' : 'info';
-        const conf = card.dataset.confidence || '';
-        let matchesFilter = true;
-        if (currentFilterKind === 'severity') {
-          matchesFilter = currentFilter === 'all' || sev === currentFilter;
-        } else {
-          matchesFilter = currentFilter === 'all' || conf === currentFilter;
-        }
-        const text = (card.textContent || '').toLowerCase();
-        const matchesSearch = !currentSearch || text.includes(currentSearch);
-        card.classList.toggle('hide', !(matchesFilter && matchesSearch));
+
+    // Score formula: click the ? icon next to the score to see it.
+    (function wireScoreFormula() {
+      const scoreStat = els.summary ? Array.from(els.summary.querySelectorAll('.stat')).find((s) => s.querySelector('.info-icon')) : null;
+      if (!scoreStat) return;
+      const b = (REPORT.findings || []);
+      const breakdown = {
+        confirmedErrors: 0, probableErrors: 0, inconclusiveErrors: 0,
+        confirmedWarnings: 0, probableWarnings: 0, infos: 0,
+      };
+      for (const f of b) {
+        if (f.severity === 'error') {
+          if (f.confidence === 'confirmed') breakdown.confirmedErrors++;
+          else if (f.confidence === 'probable') breakdown.probableErrors++;
+          else breakdown.inconclusiveErrors++;
+        } else if (f.severity === 'warning') {
+          if (f.confidence === 'confirmed') breakdown.confirmedWarnings++;
+          else if (f.confidence === 'probable') breakdown.probableWarnings++;
+        } else if (f.severity === 'info') breakdown.infos++;
+      }
+      scoreStat.querySelector('.info-icon').addEventListener('click', () => {
+        alert([
+          'Heuristic health score (project-specific, NOT an industry standard).',
+          '',
+          'score = 100',
+          '  - 10 \\u00d7 confirmed errors (' + breakdown.confirmedErrors + ')',
+          '  -  5 \\u00d7 probable errors (' + breakdown.probableErrors + ')',
+          '  -  2 \\u00d7 inconclusive errors (' + breakdown.inconclusiveErrors + ')',
+          '  -  3 \\u00d7 confirmed warnings (' + breakdown.confirmedWarnings + ')',
+          '  -  1 \\u00d7 probable warnings (' + breakdown.probableWarnings + ')',
+          '  - 0.1 \\u00d7 any info finding (' + breakdown.infos + ')',
+          'clamped to [0, 100]',
+        ].join('\\n'));
       });
-    }
+    })();
   </script>
 </body>
 </html>`;
+}
+
+function renderFindingCard(f: Finding, i: number): string {
+  const detail = f.detail
+    ? `<details class="detail"><summary>Evidence</summary><pre>${escapeHtml(JSON.stringify(f.detail, null, 2))}</pre></details>`
+    : '';
+  const fix = f.fix
+    ? `<details class="fix" open><summary>Fix</summary><pre>${escapeHtml(f.fix)}</pre></details>`
+    : '';
+  const explanation = f.explanation
+    ? `<details class="why" open><summary>Why this matters</summary><p>${escapeHtml(f.explanation)}</p></details>`
+    : '';
+  const affected = f.affectedPages && f.affectedPages.length > 1
+    ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escapeHtml(p)}" rel="noopener">${escapeHtml(p)}</a></li>`).join('')}</ul></details>`
+    : '';
+  return `<article class="finding finding-${escapeHtml(f.severity)}" data-index="${i}" data-severity="${escapeHtml(f.severity)}" data-confidence="${escapeHtml(f.confidence)}" data-type="${escapeHtml(f.type)}" data-page="${escapeHtml(f.page || '')}">
+  <header>
+    <span class="badge severity">${escapeHtml(f.severity)}</span>
+    <span class="badge confidence confidence-${escapeHtml(f.confidence)}">${escapeHtml(f.confidence)}</span>
+    <span class="type">${escapeHtml(f.type)}</span>
+  </header>
+  <p class="msg">${escapeHtml(f.message)}</p>
+  <p class="page"><a href="${escapeHtml(f.page)}" rel="noopener">${escapeHtml(f.page)}</a></p>
+  ${explanation}
+  ${fix}
+  ${detail}
+  ${affected}
+</article>`;
 }

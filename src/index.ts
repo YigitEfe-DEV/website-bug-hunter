@@ -6,6 +6,7 @@ export {
   renderSarif,
   renderHtml,
   sortFindingsForReport,
+  computeHealthScore,
 } from './reporting/reporters.js';
 export { assertSafeUrl, UnsafeUrlError } from './fetcher/safeUrl.js';
 export type { SafeUrlOptions, SafeUrlResult } from './fetcher/safeUrl.js';
@@ -26,6 +27,7 @@ export {
 } from './scanners/index.js';
 export { extractMeta, detectDuplicates } from './scanners/duplicates.js';
 export type {
+  Confidence,
   CrawledPage,
   Finding,
   FindingType,

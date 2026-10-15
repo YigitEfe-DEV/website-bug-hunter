@@ -14,7 +14,13 @@
       --error: #ff6b6b;
       --warning: #f5c84b;
       --info: #74c0fc;
+      --confirmed: #51cf66;
+      --probable: #74c0fc;
+      --inconclusive: #8c93a3;
       --link: #8ab4ff;
+      --good: #51cf66;
+      --mid: #f5c84b;
+      --bad: #ff6b6b;
     }
     @media (prefers-color-scheme: light) {
       :root {
@@ -26,7 +32,13 @@
         --error: #c92a2a;
         --warning: #b07b00;
         --info: #1971c2;
+        --confirmed: #2b8a3e;
+        --probable: #1971c2;
+        --inconclusive: #5a6170;
         --link: #1864ab;
+        --good: #2b8a3e;
+        --mid: #b07b00;
+        --bad: #c92a2a;
       }
     }
     * { box-sizing: border-box; }
@@ -37,7 +49,7 @@
       color: var(--text);
       line-height: 1.5;
     }
-    header {
+    header.top {
       padding: 24px;
       border-bottom: 1px solid var(--border);
       display: flex;
@@ -46,22 +58,61 @@
       flex-wrap: wrap;
       gap: 12px;
     }
-    header h1 { margin: 0; font-size: 18px; }
-    header .logo {
+    header.top h1 { margin: 0; font-size: 18px; }
+    header.top .logo {
       display: inline-flex;
       align-items: center;
       gap: 10px;
       font-weight: 600;
     }
-    header .logo .dot {
+    header.top .logo .dot {
       width: 12px;
       height: 12px;
       border-radius: 50%;
       background: linear-gradient(135deg, var(--error), var(--warning));
     }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--muted);
+    }
+    .status-pill .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .status-pill[data-state="success"] .dot { background: var(--good); }
+    .status-pill[data-state="partial"] .dot { background: var(--mid); }
+    .status-pill[data-state="error"] .dot { background: var(--bad); }
+
+    .status-banner {
+      margin: 16px 24px 0;
+      padding: 12px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      font-size: 13px;
+    }
+    .status-banner.warn {
+      border-color: var(--warning);
+      background: rgba(245,200,75,0.08);
+    }
+    .status-banner.err {
+      border-color: var(--error);
+      background: rgba(255,107,107,0.08);
+    }
+    .status-banner.hide { display: none; }
+
     .summary {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       gap: 12px;
       padding: 16px 24px;
     }
@@ -70,39 +121,98 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 12px 16px;
+      position: relative;
     }
-    .stat .v { font-size: 24px; font-weight: 600; }
-    .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat .v { font-size: 24px; font-weight: 600; line-height: 1.1; }
+    .stat .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
     .stat.error .v { color: var(--error); }
     .stat.warning .v { color: var(--warning); }
     .stat.info .v { color: var(--info); }
+    .stat.confirmed .v { color: var(--confirmed); }
+    .stat.probable .v { color: var(--probable); }
+    .stat.inconclusive .v { color: var(--inconclusive); }
+    .stat .info-icon {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--border);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: help;
+      user-select: none;
+    }
+    .stat.score-good .v { color: var(--good); }
+    .stat.score-mid .v { color: var(--mid); }
+    .stat.score-bad .v { color: var(--bad); }
 
     .controls {
-      padding: 0 24px 16px;
+      padding: 0 24px 12px;
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
       align-items: center;
     }
-    .controls button, .controls label {
+    .controls button,
+    .controls select,
+    .controls input[type="text"],
+    .controls input[type="search"] {
       background: var(--card);
       border: 1px solid var(--border);
       color: var(--text);
       border-radius: 6px;
       padding: 6px 12px;
       font-size: 13px;
+    }
+    .controls select {
+      cursor: pointer;
+      max-width: 200px;
+    }
+    .controls button {
       cursor: pointer;
     }
-    .controls button.active { background: var(--info); color: var(--bg); border-color: var(--info); }
-    .controls input[type="search"] {
+    .controls button.active {
+      background: var(--info);
+      color: var(--bg);
+      border-color: var(--info);
+    }
+    .controls input[type="search"],
+    .controls input[type="text"] {
       flex: 1;
-      min-width: 200px;
+      min-width: 160px;
+    }
+    .controls .group-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 4px;
+    }
+    .controls .group { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+    .results-meta {
+      padding: 0 24px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: baseline;
+    }
+    .results-meta .reset-filters {
       background: var(--card);
       border: 1px solid var(--border);
       color: var(--text);
       border-radius: 6px;
-      padding: 6px 10px;
-      font-size: 13px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 12px;
     }
 
     main { padding: 0 24px 64px; display: grid; gap: 12px; }
@@ -119,6 +229,7 @@
       align-items: center;
       gap: 8px;
       margin-bottom: 6px;
+      flex-wrap: wrap;
     }
     .badge {
       padding: 2px 8px;
@@ -126,24 +237,48 @@
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+      font-weight: 600;
     }
-    .finding-error .badge { background: rgba(255,107,107,0.15); color: var(--error); }
-    .finding-warning .badge { background: rgba(245,200,75,0.15); color: var(--warning); }
-    .finding-info .badge { background: rgba(116,192,252,0.15); color: var(--info); }
+    .finding-error .badge.severity { background: rgba(255,107,107,0.15); color: var(--error); }
+    .finding-warning .badge.severity { background: rgba(245,200,75,0.15); color: var(--warning); }
+    .finding-info .badge.severity { background: rgba(116,192,252,0.15); color: var(--info); }
+    .badge.confidence.confirmed { background: rgba(81,207,102,0.15); color: var(--confirmed); }
+    .badge.confidence.probable { background: rgba(116,192,252,0.15); color: var(--probable); }
+    .badge.confidence.inconclusive { background: rgba(140,147,163,0.15); color: var(--inconclusive); }
     .type { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
     .msg { margin: 4px 0; font-size: 14px; }
     .page { margin: 4px 0; font-size: 12px; color: var(--muted); word-break: break-all; }
     .page a { color: var(--link); text-decoration: none; }
     .page a:hover { text-decoration: underline; }
-    pre {
+    details { margin-top: 8px; }
+    details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      user-select: none;
+      padding: 2px 0;
+    }
+    details pre {
       background: rgba(0,0,0,0.25);
       padding: 8px;
       border-radius: 4px;
       overflow-x: auto;
       font-size: 12px;
-      margin: 8px 0 0;
+      margin: 4px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
-    .empty { padding: 48px 24px; text-align: center; color: var(--muted); }
+    details.fix summary { color: var(--info); }
+    details.why summary { color: var(--probable); }
+    details ul { margin: 4px 0; padding-left: 18px; font-size: 12px; }
+    details ul li { word-break: break-all; }
+
+    .empty {
+      padding: 48px 24px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .empty h3 { margin: 0 0 8px; color: var(--text); }
     .upload { padding: 48px 24px; text-align: center; }
     .upload p { color: var(--muted); }
     .upload label {
@@ -156,6 +291,24 @@
       font-weight: 500;
     }
     .upload input[type="file"] { display: none; }
+    .upload.dragover { border: 2px dashed var(--info); border-radius: 8px; }
+
+    .loading {
+      padding: 48px 24px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .loading .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid var(--border);
+      border-top-color: var(--info);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
     footer {
       padding: 16px 24px;
       color: var(--muted);
@@ -163,46 +316,92 @@
       border-top: 1px solid var(--border);
     }
     .hide { display: none !important; }
-    @media (max-width: 600px) {
+
+    @media (max-width: 720px) {
+      .controls { flex-direction: column; align-items: stretch; }
+      .controls .group { flex-wrap: wrap; }
+      .controls button, .controls select, .controls input { width: 100%; }
+      header.top { flex-direction: column; align-items: flex-start; }
+    }
+    @media (max-width: 480px) {
       .summary { grid-template-columns: repeat(2, 1fr); }
-      header { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
 <body>
-  <header>
+  <header class="top">
     <div class="logo">
       <span class="dot"></span>
       <h1>Website Bug Hunter</h1>
     </div>
     <div>
-      <a href="https://github.com/website-bug-hunter" style="color: var(--link); text-decoration: none; font-size: 13px;">
+      <span id="statusPill" class="status-pill hide" data-state="idle">
+        <span class="dot"></span><span id="statusPillText">idle</span>
+      </span>
+      <a href="https://github.com/website-bug-hunter" style="color: var(--link); text-decoration: none; font-size: 13px; margin-left: 12px;">
         github.com/website-bug-hunter ↗
       </a>
     </div>
   </header>
 
+  <div id="errorBanner" class="status-banner err hide" role="alert"></div>
+
+  <section id="loading" class="loading hide">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>Loading report…</div>
+  </section>
+
   <section id="empty" class="upload">
     <h2>Open a report</h2>
     <p>Drop a <code>wbh-report.json</code> here, or pick a file. Nothing leaves your browser.</p>
-    <label for="file">Choose JSON report</label>
+    <label for="file" id="uploadLabel">Choose JSON report</label>
     <input id="file" type="file" accept="application/json,.json" />
   </section>
 
   <section id="report" class="hide">
-    <div class="summary">
-      <div class="stat"><div class="v" id="s-pages">0</div><div class="l">pages scanned</div></div>
-      <div class="stat"><div class="v" id="s-failed">0</div><div class="l">pages failed</div></div>
-      <div class="stat error"><div class="v" id="s-errors">0</div><div class="l">errors</div></div>
-      <div class="stat warning"><div class="v" id="s-warnings">0</div><div class="l">warnings</div></div>
-      <div class="stat info"><div class="v" id="s-info">0</div><div class="l">info</div></div>
+    <div id="partialBanner" class="status-banner warn hide" role="status"></div>
+    <div class="summary" id="summary"></div>
+    <div class="controls" id="controls">
+      <span class="group">
+        <span class="group-label">Severity</span>
+        <button data-kind="severity" data-filter="all" class="active">All</button>
+        <button data-kind="severity" data-filter="error">Errors</button>
+        <button data-kind="severity" data-filter="warning">Warnings</button>
+        <button data-kind="severity" data-filter="info">Info</button>
+      </span>
+      <span class="group">
+        <span class="group-label">Confidence</span>
+        <button data-kind="confidence" data-filter="all">All</button>
+        <button data-kind="confidence" data-filter="confirmed">Confirmed</button>
+        <button data-kind="confidence" data-filter="probable">Probable</button>
+        <button data-kind="confidence" data-filter="inconclusive">Inconclusive</button>
+      </span>
+      <span class="group">
+        <span class="group-label">Type</span>
+        <select id="typeFilter"><option value="all">All</option></select>
+      </span>
+      <span class="group">
+        <span class="group-label">Page</span>
+        <input id="pageFilter" type="text" placeholder="filter by page URL" />
+      </span>
+      <span class="group">
+        <span class="group-label">Search</span>
+        <input id="search" type="search" placeholder="search message, URL, or type…" />
+      </span>
+      <span class="group">
+        <span class="group-label">Sort</span>
+        <select id="sortBy">
+          <option value="severity">Severity</option>
+          <option value="url">Page URL</option>
+        </select>
+      </span>
     </div>
-    <div class="controls">
-      <button data-filter="all" class="active">All</button>
-      <button data-filter="error">Errors</button>
-      <button data-filter="warning">Warnings</button>
-      <button data-filter="info">Info</button>
-      <input id="search" type="search" placeholder="Filter by message, URL, or type…" />
+    <div class="results-meta">
+      <span id="visibleCount">0</span>
+      <span>of</span>
+      <span id="totalCount">0</span>
+      <span>findings shown</span>
+      <button id="resetFilters" class="reset-filters hide">Reset filters</button>
     </div>
     <main id="findings"></main>
   </section>
@@ -213,98 +412,450 @@
   </footer>
 
   <script>
+    'use strict';
     const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-    let currentFilter = 'all';
-    let currentSearch = '';
-    let reportData = null;
+    /** Application state. The viewer is purely a renderer over a JSON report;
+     * it never speaks to the network, never invents data, and never shows a
+     * progress bar (a static report has no live scanner state to reflect). */
+    const state = {
+      report: null,
+      filter: {
+        severity: 'all',
+        confidence: 'all',
+        type: 'all',
+        page: '',
+        search: '',
+      },
+      sort: 'severity',
+      processing: false,
+    };
 
-    const fileInput = document.getElementById('file');
-    fileInput.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
+    const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 };
+    const CONFIDENCE_ORDER = { confirmed: 0, probable: 1, inconclusive: 2 };
+
+    const els = {
+      file: document.getElementById('file'),
+      empty: document.getElementById('empty'),
+      report: document.getElementById('report'),
+      loading: document.getElementById('loading'),
+      errorBanner: document.getElementById('errorBanner'),
+      partialBanner: document.getElementById('partialBanner'),
+      summary: document.getElementById('summary'),
+      findings: document.getElementById('findings'),
+      typeFilter: document.getElementById('typeFilter'),
+      pageFilter: document.getElementById('pageFilter'),
+      search: document.getElementById('search'),
+      sortBy: document.getElementById('sortBy'),
+      resetFilters: document.getElementById('resetFilters'),
+      visibleCount: document.getElementById('visibleCount'),
+      totalCount: document.getElementById('totalCount'),
+      statusPill: document.getElementById('statusPill'),
+      statusPillText: document.getElementById('statusPillText'),
+      uploadLabel: document.getElementById('uploadLabel'),
+    };
+
+    /* ---------- file input ---------- */
+
+    els.file.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      // Reset value so re-selecting the same file re-fires change.
+      els.file.value = '';
       if (!file) return;
-      const text = await file.text();
-      try {
-        const data = JSON.parse(text);
-        render(data);
-      } catch (err) {
-        alert('Invalid JSON: ' + err.message);
-      }
+      await loadFile(file);
     });
 
-    // Drag & drop
-    document.body.addEventListener('dragover', (e) => { e.preventDefault(); });
-    document.body.addEventListener('drop', async (e) => {
+    els.empty.addEventListener('dragover', (e) => {
       e.preventDefault();
-      const file = e.dataTransfer.files[0];
-      if (!file) return;
-      const text = await file.text();
-      try {
-        render(JSON.parse(text));
-      } catch (err) {
-        alert('Invalid JSON: ' + err.message);
-      }
+      els.empty.classList.add('dragover');
     });
+    els.empty.addEventListener('dragleave', () => {
+      els.empty.classList.remove('dragover');
+    });
+    els.empty.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      els.empty.classList.remove('dragover');
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!file) return;
+      await loadFile(file);
+    });
+
+    document.body.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+    document.body.addEventListener('drop', (e) => {
+      // Prevent navigating away when the user drops outside the empty panel.
+      if (!els.empty.contains(e.target)) e.preventDefault();
+    });
+
+    async function loadFile(file) {
+      if (state.processing) return; // Guard against rapid duplicate submissions.
+      state.processing = true;
+      els.uploadLabel.style.opacity = '0.6';
+      els.uploadLabel.style.pointerEvents = 'none';
+      setLoading(true);
+      hideError();
+      try {
+        const text = await file.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (err) {
+          showError(`Not valid JSON: ${err.message}`);
+          return;
+        }
+        const validation = validateReport(data);
+        if (validation) {
+          showError(`Invalid WBH report: ${validation}`);
+          return;
+        }
+        renderReport(data);
+      } finally {
+        state.processing = false;
+        els.uploadLabel.style.opacity = '';
+        els.uploadLabel.style.pointerEvents = '';
+        setLoading(false);
+      }
+    }
+
+    function setLoading(on) {
+      els.loading.classList.toggle('hide', !on);
+    }
+
+    function showError(msg) {
+      els.errorBanner.textContent = msg;
+      els.errorBanner.classList.remove('hide');
+      setStatus('error', 'error');
+      // Stay on the empty section so the user can pick another file.
+      els.report.classList.add('hide');
+    }
+    function hideError() {
+      els.errorBanner.classList.add('hide');
+    }
+
+    /* ---------- validation ---------- */
+
+    function validateReport(d) {
+      if (!d || typeof d !== 'object') return 'not an object';
+      if (typeof d.target !== 'string') return 'missing "target"';
+      if (typeof d.startedAt !== 'number') return 'missing "startedAt"';
+      if (typeof d.finishedAt !== 'number') return 'missing "finishedAt"';
+      if (!Array.isArray(d.findings)) return 'missing "findings" array';
+      return null;
+    }
+
+    /* ---------- filters / sort ---------- */
 
     document.querySelectorAll('.controls button[data-filter]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.controls button[data-filter]').forEach((b) => b.classList.remove('active'));
+        const kind = btn.dataset.kind;
+        const value = btn.dataset.filter;
+        if (kind === 'severity') state.filter.severity = value;
+        if (kind === 'confidence') state.filter.confidence = value;
+        document.querySelectorAll(`.controls button[data-kind="${kind}"]`).forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        currentFilter = btn.dataset.filter;
         applyFilters();
       });
     });
-    document.getElementById('search').addEventListener('input', (e) => {
-      currentSearch = e.target.value.toLowerCase();
+    els.typeFilter.addEventListener('change', (e) => {
+      state.filter.type = e.target.value;
+      applyFilters();
+    });
+    els.pageFilter.addEventListener('input', (e) => {
+      state.filter.page = e.target.value.trim().toLowerCase();
+      applyFilters();
+    });
+    els.search.addEventListener('input', (e) => {
+      state.filter.search = e.target.value.trim().toLowerCase();
+      applyFilters();
+    });
+    els.sortBy.addEventListener('change', (e) => {
+      state.sort = e.target.value;
+      applyFilters();
+    });
+    els.resetFilters.addEventListener('click', () => {
+      state.filter = { severity: 'all', confidence: 'all', type: 'all', page: '', search: '' };
+      state.sort = 'severity';
+      // Reflect in UI
+      document.querySelectorAll('.controls button[data-kind="severity"]').forEach((b) => b.classList.toggle('active', b.dataset.filter === 'all'));
+      document.querySelectorAll('.controls button[data-kind="confidence"]').forEach((b) => b.classList.remove('active'));
+      const firstConfidence = document.querySelector('.controls button[data-kind="confidence"][data-filter="all"]');
+      if (firstConfidence) firstConfidence.classList.add('active');
+      els.typeFilter.value = 'all';
+      els.pageFilter.value = '';
+      els.search.value = '';
+      els.sortBy.value = 'severity';
       applyFilters();
     });
 
-    function render(data) {
-      reportData = data;
-      document.getElementById('empty').classList.add('hide');
-      document.getElementById('report').classList.remove('hide');
+    /* ---------- rendering ---------- */
 
-      document.getElementById('s-pages').textContent = data.pagesScanned ?? 0;
-      document.getElementById('s-failed').textContent = data.pagesFailed ?? 0;
-      const findings = data.findings || [];
-      document.getElementById('s-errors').textContent = findings.filter((f) => f.severity === 'error').length;
-      document.getElementById('s-warnings').textContent = findings.filter((f) => f.severity === 'warning').length;
-      document.getElementById('s-info').textContent = findings.filter((f) => f.severity === 'info').length;
+    function renderReport(d) {
+      state.report = d;
+      els.empty.classList.add('hide');
+      els.report.classList.remove('hide');
+      renderSummary(d);
+      populateTypeFilter(d.findings || []);
+      renderFindings(d);
+    }
 
-      const main = document.getElementById('findings');
-      main.innerHTML = findings
-        .map((f, i) => {
-          const detail = f.detail ? `<pre>${escape(JSON.stringify(f.detail, null, 2))}</pre>` : '';
-          return `<article class="finding finding-${escape(f.severity)}" data-i="${i}">
-            <header>
-              <span class="badge">${escape(f.severity)}</span>
-              <span class="type">${escape(f.type)}</span>
-            </header>
-            <p class="msg">${escape(f.message)}</p>
-            <p class="page"><a href="${escape(f.page)}" rel="noopener" target="_blank">${escape(f.page)}</a></p>
-            ${detail}
-          </article>`;
-        })
-        .join('') || '<div class="empty">No findings. ✓</div>';
+    function renderSummary(d) {
+      const findings = d.findings || [];
+      const pagesScanned = d.pagesScanned ?? 0;
+      const pagesFailed = d.pagesFailed ?? 0;
+      const pagesSkipped = d.pagesSkipped ?? 0;
+      const linkProbes = (d.cache && d.cache.linkProbes) || 0;
+      const assetProbes = (d.cache && d.cache.assetProbes) || 0;
+      const urlsChecked = linkProbes + assetProbes + pagesScanned;
+      const sevCounts = { error: 0, warning: 0, info: 0 };
+      const confCounts = { confirmed: 0, probable: 0, inconclusive: 0 };
+      for (const f of findings) {
+        sevCounts[f.severity] = (sevCounts[f.severity] || 0) + 1;
+        confCounts[f.confidence] = (confCounts[f.confidence] || 0) + 1;
+      }
 
+      const score = computeHealthScore(findings);
+      const scoreClass = score >= 80 ? 'score-good' : score >= 50 ? 'score-mid' : 'score-bad';
+      const startedAt = new Date(d.startedAt).toISOString();
+      const duration = ((d.durationMs || 0) / 1000).toFixed(2);
+
+      const partial = d.budgetExhausted || pagesFailed > 0;
+      setStatus(
+        partial ? 'partial' : 'success',
+        partial ? 'partial' : 'complete',
+      );
+      if (d.budgetExhausted) {
+        els.partialBanner.textContent = 'Scan ended because the budget was exhausted (max pages, max depth, or max time). Results are incomplete.';
+        els.partialBanner.classList.remove('hide');
+      } else if (pagesFailed > 0) {
+        els.partialBanner.textContent = `${pagesFailed} page(s) failed to load. Their findings are reported but the pages themselves were not crawled.`;
+        els.partialBanner.classList.remove('hide');
+      } else {
+        els.partialBanner.classList.add('hide');
+      }
+
+      els.summary.innerHTML = `
+        <div class="stat"><div class="v">${pagesScanned}</div><div class="l">pages scanned</div></div>
+        <div class="stat"><div class="v">${pagesFailed}</div><div class="l">pages failed</div></div>
+        ${pagesSkipped ? `<div class="stat"><div class="v">${pagesSkipped}</div><div class="l">pages skipped (robots)</div></div>` : ''}
+        <div class="stat"><div class="v">${urlsChecked}</div><div class="l">URLs checked</div></div>
+        <div class="stat error"><div class="v">${sevCounts.error}</div><div class="l">errors</div></div>
+        <div class="stat warning"><div class="v">${sevCounts.warning}</div><div class="l">warnings</div></div>
+        <div class="stat info"><div class="v">${sevCounts.info}</div><div class="l">info</div></div>
+        <div class="stat confirmed"><div class="v">${confCounts.confirmed}</div><div class="l">confirmed</div></div>
+        <div class="stat probable"><div class="v">${confCounts.probable}</div><div class="l">probable</div></div>
+        <div class="stat inconclusive"><div class="v">${confCounts.inconclusive}</div><div class="l">inconclusive</div></div>
+        <div class="stat ${scoreClass}" title="Heuristic health score">
+          <div class="v">${score}</div>
+          <div class="l">heuristic score</div>
+          <span class="info-icon" title="Click for the formula">?</span>
+        </div>
+        <div class="stat"><div class="v" title="${escape(startedAt)}">${escape(startedAt.substring(0, 19).replace('T', ' '))}</div><div class="l">started (UTC)</div></div>
+        <div class="stat"><div class="v">${duration}s</div><div class="l">duration</div></div>
+      `;
+      // Wire score formula tooltip
+      const scoreStat = els.summary.querySelector('.stat:last-of-type');
+      const icon = scoreStat && scoreStat.querySelector('.info-icon');
+      if (icon) {
+        icon.addEventListener('click', (e) => {
+          e.stopPropagation();
+          alert(scoreFormula(findings));
+        });
+      }
+    }
+
+    function setStatus(stateName, label) {
+      els.statusPill.classList.remove('hide');
+      els.statusPill.dataset.state = stateName;
+      els.statusPillText.textContent = label;
+    }
+
+    /**
+     * Heuristic health score. Project-specific, NOT an industry standard.
+     * Range 0-100. Higher is better.
+     *
+     * Formula:
+     *   start at 100
+     *   subtract 10 per confirmed error
+     *   subtract  5 per probable error
+     *   subtract  2 per inconclusive error
+     *   subtract  3 per confirmed warning
+     *   subtract  1 per probable warning
+     *   subtract  0.1 per any info finding
+     *   clamp to [0, 100]
+     *
+     * Inconclusive findings barely affect the score because the scanner
+     * could not verify them — penalising hard would punish users for
+     * transient timeouts.
+     */
+    function computeHealthScore(findings) {
+      let score = 100;
+      for (const f of findings) {
+        if (f.severity === 'error') {
+          if (f.confidence === 'confirmed') score -= 10;
+          else if (f.confidence === 'probable') score -= 5;
+          else score -= 2;
+        } else if (f.severity === 'warning') {
+          if (f.confidence === 'confirmed') score -= 3;
+          else if (f.confidence === 'probable') score -= 1;
+        } else if (f.severity === 'info') {
+          score -= 0.1;
+        }
+      }
+      return Math.max(0, Math.min(100, Math.round(score)));
+    }
+
+    function scoreFormula(findings) {
+      const lines = [
+        'Heuristic health score (project-specific)',
+        '',
+        'score = 100',
+        '  - 10 × confirmed errors',
+        '  -  5 × probable errors',
+        '  -  2 × inconclusive errors',
+        '  -  3 × confirmed warnings',
+        '  -  1 × probable warnings',
+        '  - 0.1 × any info finding',
+        'clamped to [0, 100]',
+        '',
+        'Inconclusive findings barely affect the score because the',
+        'scanner could not verify them — penalising hard would punish',
+        'users for transient timeouts.',
+      ];
+      // Compute a per-bucket breakdown so the user can see the input.
+      let confirmedErrors = 0, probableErrors = 0, inconclusiveErrors = 0;
+      let confirmedWarnings = 0, probableWarnings = 0, infos = 0;
+      for (const f of findings) {
+        if (f.severity === 'error') {
+          if (f.confidence === 'confirmed') confirmedErrors++;
+          else if (f.confidence === 'probable') probableErrors++;
+          else inconclusiveErrors++;
+        } else if (f.severity === 'warning') {
+          if (f.confidence === 'confirmed') confirmedWarnings++;
+          else if (f.confidence === 'probable') probableWarnings++;
+        } else if (f.severity === 'info') infos++;
+      }
+      lines.push('');
+      lines.push(`This report: -${10 * confirmedErrors}/${10 * confirmedErrors} confirmed errors, -${5 * probableErrors} probable errors, -${2 * inconclusiveErrors} inconclusive errors, -${3 * confirmedWarnings} confirmed warnings, -${probableWarnings} probable warnings, -${Math.round(infos * 0.1)} from infos.`);
+      return lines.join('\n');
+    }
+
+    function populateTypeFilter(findings) {
+      const types = new Set();
+      for (const f of findings) types.add(f.type);
+      const opts = ['<option value="all">All</option>'];
+      for (const t of [...types].sort()) {
+        opts.push(`<option value="${escape(t)}">${escape(t)}</option>`);
+      }
+      els.typeFilter.innerHTML = opts.join('');
+      els.typeFilter.value = 'all';
+    }
+
+    function sortFindings(arr) {
+      const sorted = arr.slice();
+      if (state.sort === 'url') {
+        sorted.sort((a, b) => (a.page || '').localeCompare(b.page || '') || a.id.localeCompare(b.id));
+      } else {
+        sorted.sort((a, b) => {
+          const sd = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
+          if (sd !== 0) return sd;
+          const cd = CONFIDENCE_ORDER[a.confidence] - CONFIDENCE_ORDER[b.confidence];
+          if (cd !== 0) return cd;
+          if (a.type !== b.type) return a.type < b.type ? -1 : 1;
+          return a.id < b.id ? -1 : 1;
+        });
+      }
+      return sorted;
+    }
+
+    function renderFindings(d) {
+      const sorted = sortFindings(d.findings || []);
+      els.findings.innerHTML = sorted.map((f, i) => renderFinding(f, i)).join('');
       applyFilters();
     }
 
+    function renderFinding(f, i) {
+      const detail = f.detail
+        ? `<details class="detail"><summary>Evidence</summary><pre>${escape(JSON.stringify(f.detail, null, 2))}</pre></details>`
+        : '';
+      const fix = f.fix
+        ? `<details class="fix" open><summary>Fix</summary><pre>${escape(f.fix)}</pre></details>`
+        : '';
+      const explanation = f.explanation
+        ? `<details class="why" open><summary>Why this matters</summary><p>${escape(f.explanation)}</p></details>`
+        : '';
+      const affected = (f.affectedPages && f.affectedPages.length > 1)
+        ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escape(p)}" rel="noopener" target="_blank">${escape(p)}</a></li>`).join('')}</ul></details>`
+        : '';
+      return `<article class="finding finding-${escape(f.severity)}" data-index="${i}" data-severity="${escape(f.severity)}" data-confidence="${escape(f.confidence)}" data-type="${escape(f.type)}" data-page="${escape(f.page || '')}">
+        <header>
+          <span class="badge severity">${escape(f.severity)}</span>
+          <span class="badge confidence confidence-${escape(f.confidence)}">${escape(f.confidence)}</span>
+          <span class="type">${escape(f.type)}</span>
+        </header>
+        <p class="msg">${escape(f.message)}</p>
+        <p class="page"><a href="${escape(f.page)}" rel="noopener" target="_blank">${escape(f.page)}</a></p>
+        ${explanation}
+        ${fix}
+        ${detail}
+        ${affected}
+      </article>`;
+    }
+
     function applyFilters() {
-      if (!reportData) return;
-      const findings = reportData.findings || [];
+      if (!state.report) return;
+      const f = state.filter;
       const cards = document.querySelectorAll('.finding');
+      let visible = 0;
       cards.forEach((card) => {
-        const i = parseInt(card.dataset.i, 10);
-        const f = findings[i];
-        const matchesFilter = currentFilter === 'all' || f.severity === currentFilter;
-        const search = currentSearch;
-        const matchesSearch = !search ||
-          f.message.toLowerCase().includes(search) ||
-          f.page.toLowerCase().includes(search) ||
-          f.type.toLowerCase().includes(search);
-        card.classList.toggle('hide', !(matchesFilter && matchesSearch));
+        const sev = card.dataset.severity;
+        const conf = card.dataset.confidence;
+        const typ = card.dataset.type;
+        const page = (card.dataset.page || '').toLowerCase();
+        const matchesSeverity = f.severity === 'all' || sev === f.severity;
+        const matchesConfidence = f.confidence === 'all' || conf === f.confidence;
+        const matchesType = f.type === 'all' || typ === f.type;
+        const matchesPage = !f.page || page.includes(f.page);
+        // Search matches any visible text field. The article's textContent
+        // includes type, message, page, and the (collapsed) details; that's
+        // good enough for substring matching.
+        const matchesSearch = !f.search || (card.textContent || '').toLowerCase().includes(f.search);
+        const matches = matchesSeverity && matchesConfidence && matchesType && matchesPage && matchesSearch;
+        card.classList.toggle('hide', !matches);
+        if (matches) visible++;
       });
+      els.visibleCount.textContent = String(visible);
+      els.totalCount.textContent = String(cards.length);
+      els.resetFilters.classList.toggle(
+        'hide',
+        f.severity === 'all' && f.confidence === 'all' && f.type === 'all' && !f.page && !f.search,
+      );
+      // Replace findings with an empty-state placeholder if nothing matches
+      // but findings exist in the underlying report.
+      const findingsArr = state.report.findings || [];
+      if (cards.length > 0 && visible === 0 && findingsArr.length > 0) {
+        if (!document.getElementById('filterEmpty')) {
+          els.findings.insertAdjacentHTML(
+            'beforeend',
+            '<div id="filterEmpty" class="empty"><h3>No findings match the current filters.</h3><p>Try resetting filters or broadening the search.</p></div>',
+          );
+        }
+      } else {
+        const fe = document.getElementById('filterEmpty');
+        if (fe) fe.remove();
+      }
+      // Empty report state (no findings at all)
+      if (cards.length === 0 && findingsArr.length === 0) {
+        if (!document.getElementById('noFindings')) {
+          els.findings.insertAdjacentHTML(
+            'beforeend',
+            '<div id="noFindings" class="empty"><h3>✓ No issues found.</h3><p>The scan completed with no findings.</p></div>',
+          );
+        }
+      } else {
+        const nf = document.getElementById('noFindings');
+        if (nf) nf.remove();
+      }
     }
   </script>
 </body>
