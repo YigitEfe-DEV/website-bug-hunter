@@ -9,14 +9,14 @@
  *   R3 (non-http scheme) - only http(s); reject file:, data:, javascript:, gopher:, ftp:
  *   R7 (path traversal)  - normalize; reject hosts that look like control chars or NULs
  */
-import { lookup, type LookupAddress } from 'dns/promises';
+import { lookup } from 'dns/promises';
+import type { LookupAddress } from 'dns';
 
 export interface SafeUrlOptions {
   /** Override the DNS resolver (used for testing DNS rebinding). */
   resolver?: (hostname: string) => Promise<LookupAddress[]>;
   /** Allow private/loopback ranges. NEVER set in production. Off-limits by default. */
   allowPrivate?: boolean;
-  /** Public lookup function (overridable for tests). */
 }
 
 export interface SafeUrlResult {
@@ -38,8 +38,8 @@ const BLOCKED_V4_CIDRS: ReadonlyArray<readonly [number, number]> = [
   [0xac100000, 0xac1fffff],
   // [192.168.0.0/16]
   [0xc0a80000, 0xc0a8ffff],
-  // [100.64.0.0/10]  (CGNAT)
-  [0x40400000, 0x4043ffff],
+  // [100.64.0.0/10]  (CGNAT, shared address space)
+  [0x64400000, 0x647fffff],
   // [0.0.0.0/8]
   [0x00000000, 0x00ffffff],
   // [192.0.2.0/24], [198.51.100.0/24], [203.0.113.0/24]  (TEST-NET, often unmetered)
@@ -112,16 +112,16 @@ function ipv4ToInt(addr: string): number | null {
 
 /** Expand an IPv6 address to its 8 groups (16-bit each). */
 function ipv6ToGroups(addr: string): number[] | null {
-  // Handle IPv4-mapped suffix
   let s = addr.toLowerCase();
-  let mappedV4: number | null = null;
+  // Handle IPv4-mapped suffix: rewrite '::ffff:a.b.c.d' to '::ffff:HHHH:LLLL'
   const lastColon = s.lastIndexOf(':');
   const tail = s.substring(lastColon + 1);
   if (tail.includes('.')) {
     const v4 = ipv4ToInt(tail);
     if (v4 === null) return null;
-    mappedV4 = v4;
-    s = s.substring(0, lastColon + 1) + '0:0';
+    const hi = ((v4 >>> 16) & 0xffff).toString(16);
+    const lo = (v4 & 0xffff).toString(16);
+    s = s.substring(0, lastColon + 1) + hi + ':' + lo;
   }
   // Split on '::'
   const dblColonIdx = s.indexOf('::');
@@ -129,7 +129,7 @@ function ipv6ToGroups(addr: string): number[] | null {
   const right = dblColonIdx >= 0 ? s.substring(dblColonIdx + 2).split(':') : [];
   const leftFiltered = left.filter((g) => g !== '');
   const rightFiltered = right.filter((g) => g !== '');
-  const missing = 8 - (leftFiltered.length + rightFiltered.length + (mappedV4 !== null ? 2 : 0));
+  const missing = 8 - (leftFiltered.length + rightFiltered.length);
   if (dblColonIdx >= 0 && missing < 0) return null;
   if (dblColonIdx < 0 && missing !== 0) return null;
   const groups: number[] = [];
@@ -146,15 +146,15 @@ function ipv6ToGroups(addr: string): number[] | null {
     if (Number.isNaN(n)) return null;
     groups.push(n);
   }
-  if (mappedV4 !== null) {
-    groups.push((mappedV4 >>> 16) & 0xffff, mappedV4 & 0xffff);
-  }
   if (groups.length !== 8) return null;
   return groups;
 }
 
-function parseCidrV4(cidr: string): { base: number; mask: number } | null {
-  const [addr, bitsStr] = cidr.split('/');
+function _parseCidrV4(cidr: string): { base: number; mask: number } | null {
+  const idx = cidr.indexOf('/');
+  if (idx < 0) return null;
+  const addr = cidr.substring(0, idx);
+  const bitsStr = cidr.substring(idx + 1);
   const bits = Number(bitsStr);
   if (!Number.isInteger(bits) || bits < 0 || bits > 32) return null;
   const base = ipv4ToInt(addr);
@@ -173,7 +173,10 @@ function isBlockedV4(addr: string): boolean {
 }
 
 function parseCidrV6(cidr: string): { groups: number[]; prefixLen: number } | null {
-  const [addr, bitsStr] = cidr.split('/');
+  const idx = cidr.indexOf('/');
+  if (idx < 0) return null;
+  const addr = cidr.substring(0, idx);
+  const bitsStr = cidr.substring(idx + 1);
   const bits = Number(bitsStr);
   if (!Number.isInteger(bits) || bits < 0 || bits > 128) return null;
   const groups = ipv6ToGroups(addr);
@@ -188,8 +191,11 @@ function ipv6MatchesCidr(groups: number[], cidr: { groups: number[]; prefixLen: 
   }
   const remainder = cidr.prefixLen % 16;
   if (remainder === 0) return true;
+  const refGroup = cidr.groups[fullBits];
+  const targetGroup = groups[fullBits];
+  if (refGroup === undefined || targetGroup === undefined) return false;
   const mask = (~((1 << (16 - remainder)) - 1)) & 0xffff;
-  return (groups[fullBits] & mask) === (cidr.groups[fullBits] & mask);
+  return (targetGroup & mask) === (refGroup & mask);
 }
 
 function isBlockedV6(addr: string): boolean {
@@ -255,32 +261,37 @@ export async function assertSafeUrl(
     throw new UnsafeUrlError('NO_HOST', 'URL has no hostname', rawUrl);
   }
 
+  // WHATWG URL keeps brackets around IPv6 hostnames; strip them for parsing.
+  const bareHost = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+
   const lowerHost = hostname.toLowerCase();
   if (BLOCKED_HOSTNAMES.has(lowerHost)) {
     throw new UnsafeUrlError('BLOCKED_HOSTNAME', `Hostname is in deny-list: ${lowerHost}`, rawUrl);
   }
 
   // Hostname that is already a literal IP: validate it directly without DNS.
-  const literalV4 = ipv4ToInt(hostname);
-  const literalV6Groups = literalV4 === null ? ipv6ToGroups(hostname) : null;
+  const literalV4 = ipv4ToInt(bareHost);
+  const literalV6Groups = literalV4 === null ? ipv6ToGroups(bareHost) : null;
   if (literalV4 !== null || literalV6Groups !== null) {
     if (!opts.allowPrivate) {
-      if (literalV4 !== null && isBlockedV4(hostname)) {
+      if (literalV4 !== null && isBlockedV4(bareHost)) {
         throw new UnsafeUrlError(
           'PRIVATE_IP',
-          `Literal IPv4 is in a denied range: ${hostname}`,
+          `Literal IPv4 is in a denied range: ${bareHost}`,
           rawUrl,
         );
       }
-      if (literalV6Groups !== null && isBlockedV6(hostname)) {
+      if (literalV6Groups !== null && isBlockedV6(bareHost)) {
         throw new UnsafeUrlError(
           'PRIVATE_IP',
-          `Literal IPv6 is in a denied range: ${hostname}`,
+          `Literal IPv6 is in a denied range: ${bareHost}`,
           rawUrl,
         );
       }
     }
-    return { url: parsed, ip: hostname };
+    return { url: parsed, ip: bareHost };
   }
 
   // Hostname needs DNS resolution.

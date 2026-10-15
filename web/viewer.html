@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Website Bug Hunter — Report Viewer</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #181b22;
+      --border: #2a2f3a;
+      --text: #e6e8ee;
+      --muted: #8c93a3;
+      --error: #ff6b6b;
+      --warning: #f5c84b;
+      --info: #74c0fc;
+      --link: #8ab4ff;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #fafbfc;
+        --card: #ffffff;
+        --border: #e6e8ec;
+        --text: #1a1d22;
+        --muted: #5a6170;
+        --error: #c92a2a;
+        --warning: #b07b00;
+        --info: #1971c2;
+        --link: #1864ab;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    header h1 { margin: 0; font-size: 18px; }
+    header .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+    }
+    header .logo .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--error), var(--warning));
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      padding: 16px 24px;
+    }
+    .stat {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+    }
+    .stat .v { font-size: 24px; font-weight: 600; }
+    .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat.error .v { color: var(--error); }
+    .stat.warning .v { color: var(--warning); }
+    .stat.info .v { color: var(--info); }
+
+    .controls {
+      padding: 0 24px 16px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .controls button, .controls label {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .controls button.active { background: var(--info); color: var(--bg); border-color: var(--info); }
+    .controls input[type="search"] {
+      flex: 1;
+      min-width: 200px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+
+    main { padding: 0 24px 64px; display: grid; gap: 12px; }
+    .finding {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+    }
+    .finding header {
+      padding: 0;
+      border: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .finding-error .badge { background: rgba(255,107,107,0.15); color: var(--error); }
+    .finding-warning .badge { background: rgba(245,200,75,0.15); color: var(--warning); }
+    .finding-info .badge { background: rgba(116,192,252,0.15); color: var(--info); }
+    .type { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+    .msg { margin: 4px 0; font-size: 14px; }
+    .page { margin: 4px 0; font-size: 12px; color: var(--muted); word-break: break-all; }
+    .page a { color: var(--link); text-decoration: none; }
+    .page a:hover { text-decoration: underline; }
+    pre {
+      background: rgba(0,0,0,0.25);
+      padding: 8px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 12px;
+      margin: 8px 0 0;
+    }
+    .empty { padding: 48px 24px; text-align: center; color: var(--muted); }
+    .upload { padding: 48px 24px; text-align: center; }
+    .upload p { color: var(--muted); }
+    .upload label {
+      display: inline-block;
+      background: var(--info);
+      color: var(--bg);
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .upload input[type="file"] { display: none; }
+    footer {
+      padding: 16px 24px;
+      color: var(--muted);
+      font-size: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .hide { display: none !important; }
+    @media (max-width: 600px) {
+      .summary { grid-template-columns: repeat(2, 1fr); }
+      header { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <span class="dot"></span>
+      <h1>Website Bug Hunter</h1>
+    </div>
+    <div>
+      <a href="https://github.com/website-bug-hunter" style="color: var(--link); text-decoration: none; font-size: 13px;">
+        github.com/website-bug-hunter ↗
+      </a>
+    </div>
+  </header>
+
+  <section id="empty" class="upload">
+    <h2>Open a report</h2>
+    <p>Drop a <code>wbh-report.json</code> here, or pick a file. Nothing leaves your browser.</p>
+    <label for="file">Choose JSON report</label>
+    <input id="file" type="file" accept="application/json,.json" />
+  </section>
+
+  <section id="report" class="hide">
+    <div class="summary">
+      <div class="stat"><div class="v" id="s-pages">0</div><div class="l">pages scanned</div></div>
+      <div class="stat"><div class="v" id="s-failed">0</div><div class="l">pages failed</div></div>
+      <div class="stat error"><div class="v" id="s-errors">0</div><div class="l">errors</div></div>
+      <div class="stat warning"><div class="v" id="s-warnings">0</div><div class="l">warnings</div></div>
+      <div class="stat info"><div class="v" id="s-info">0</div><div class="l">info</div></div>
+    </div>
+    <div class="controls">
+      <button data-filter="all" class="active">All</button>
+      <button data-filter="error">Errors</button>
+      <button data-filter="warning">Warnings</button>
+      <button data-filter="info">Info</button>
+      <input id="search" type="search" placeholder="Filter by message, URL, or type…" />
+    </div>
+    <main id="findings"></main>
+  </section>
+
+  <footer>
+    Generated report viewer · all data stays in your browser ·
+    SSRF protection: every HTTP request goes through <code>assertSafeUrl</code>.
+  </footer>
+
+  <script>
+    const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+    let currentFilter = 'all';
+    let currentSearch = '';
+    let reportData = null;
+
+    const fileInput = document.getElementById('file');
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const text = await file.text();
+      try {
+        const data = JSON.parse(text);
+        render(data);
+      } catch (err) {
+        alert('Invalid JSON: ' + err.message);
+      }
+    });
+
+    // Drag & drop
+    document.body.addEventListener('dragover', (e) => { e.preventDefault(); });
+    document.body.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      const text = await file.text();
+      try {
+        render(JSON.parse(text));
+      } catch (err) {
+        alert('Invalid JSON: ' + err.message);
+      }
+    });
+
+    document.querySelectorAll('.controls button[data-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.controls button[data-filter]').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentFilter = btn.dataset.filter;
+        applyFilters();
+      });
+    });
+    document.getElementById('search').addEventListener('input', (e) => {
+      currentSearch = e.target.value.toLowerCase();
+      applyFilters();
+    });
+
+    function render(data) {
+      reportData = data;
+      document.getElementById('empty').classList.add('hide');
+      document.getElementById('report').classList.remove('hide');
+
+      document.getElementById('s-pages').textContent = data.pagesScanned ?? 0;
+      document.getElementById('s-failed').textContent = data.pagesFailed ?? 0;
+      const findings = data.findings || [];
+      document.getElementById('s-errors').textContent = findings.filter((f) => f.severity === 'error').length;
+      document.getElementById('s-warnings').textContent = findings.filter((f) => f.severity === 'warning').length;
+      document.getElementById('s-info').textContent = findings.filter((f) => f.severity === 'info').length;
+
+      const main = document.getElementById('findings');
+      main.innerHTML = findings
+        .map((f, i) => {
+          const detail = f.detail ? `<pre>${escape(JSON.stringify(f.detail, null, 2))}</pre>` : '';
+          return `<article class="finding finding-${escape(f.severity)}" data-i="${i}">
+            <header>
+              <span class="badge">${escape(f.severity)}</span>
+              <span class="type">${escape(f.type)}</span>
+            </header>
+            <p class="msg">${escape(f.message)}</p>
+            <p class="page"><a href="${escape(f.page)}" rel="noopener" target="_blank">${escape(f.page)}</a></p>
+            ${detail}
+          </article>`;
+        })
+        .join('') || '<div class="empty">No findings. ✓</div>';
+
+      applyFilters();
+    }
+
+    function applyFilters() {
+      if (!reportData) return;
+      const findings = reportData.findings || [];
+      const cards = document.querySelectorAll('.finding');
+      cards.forEach((card) => {
+        const i = parseInt(card.dataset.i, 10);
+        const f = findings[i];
+        const matchesFilter = currentFilter === 'all' || f.severity === currentFilter;
+        const search = currentSearch;
+        const matchesSearch = !search ||
+          f.message.toLowerCase().includes(search) ||
+          f.page.toLowerCase().includes(search) ||
+          f.type.toLowerCase().includes(search);
+        card.classList.toggle('hide', !(matchesFilter && matchesSearch));
+      });
+    }
+  </script>
+</body>
+</html>

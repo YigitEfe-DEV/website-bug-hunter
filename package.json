@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "bin": {
-    "wbh": "./dist/cli/index.js"
+    "wbh": "./dist/cli/wbh.mjs"
   },
   "files": [
     "dist",
@@ -21,6 +21,9 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli": {
+      "import": "./dist/cli/index.mjs"
     }
   },
   "scripts": {
@@ -30,7 +33,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "wbh": "node dist/cli/index.js"
+    "wbh": "node dist/cli/index.mjs"
   },
   "dependencies": {
     "cheerio": "1.0.0",

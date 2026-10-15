@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { lookup, type LookupAddress } from 'dns/promises';
 import {
   assertSafeUrl,
   UnsafeUrlError,
