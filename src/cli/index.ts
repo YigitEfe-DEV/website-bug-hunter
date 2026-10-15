@@ -2,7 +2,14 @@ import { Command } from 'commander';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runScan } from '../core/orchestrator.js';
-import { renderJson, renderText, renderSarif, renderHtml } from '../reporting/reporters.js';
+import {
+  renderJson,
+  renderText,
+  renderSarif,
+  renderHtml,
+  renderJsonExport,
+  renderCsv,
+} from '../reporting/reporters.js';
 import { ProgressReporter, formatProgressLine } from '../core/progress.js';
 import { ProbeCache } from '../core/cache.js';
 import { logger } from '../utils/logger.js';
@@ -17,7 +24,7 @@ interface CliOptions {
   userAgent?: string;
   timeout?: string;
   output?: string;
-  format?: 'json' | 'text' | 'sarif' | 'html';
+  format?: 'json' | 'text' | 'sarif' | 'html' | 'csv' | 'export';
   noRobots?: boolean;
   allowPrivate?: boolean;
   quiet?: boolean;
@@ -40,7 +47,7 @@ async function main(): Promise<void> {
     .option('--user-agent <ua>', 'User-Agent string')
     .option('--timeout <ms>', 'Per-request timeout in ms', '15000')
     .option('--output <file>', 'Write report to file (default stdout)')
-    .option('--format <fmt>', 'json|text|sarif|html', 'text')
+    .option('--format <fmt>', 'json|text|sarif|html|csv|export', 'text')
     .option('--no-robots', 'Ignore robots.txt')
     .option('--allow-private', 'Allow scanning private IP ranges (NEVER in production)')
     .option('--quiet', 'Suppress info logs')
@@ -93,7 +100,11 @@ async function main(): Promise<void> {
             ? renderSarif(result)
             : format === 'html'
               ? renderHtml(result)
-              : renderText(result);
+              : format === 'csv'
+                ? renderCsv(result)
+                : format === 'export'
+                  ? renderJsonExport(result, { toolVersion: version })
+                  : renderText(result);
 
       if (opts.output) {
         const outPath = resolve(opts.output);

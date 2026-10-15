@@ -263,6 +263,14 @@ export async function runScan(
     errors,
     budgetExhausted,
     cache: { linkProbes: cache.size().links, assetProbes: cache.size().assets },
+    config,
+    pages: crawledPages.map((p) => ({
+      url: p.requestUrl,
+      finalUrl: p.finalUrl,
+      status: p.status,
+      fetchedAt: p.fetchedAt,
+      bytes: p.bytes,
+    })),
   };
 
   progress?.emit({

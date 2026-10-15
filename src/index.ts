@@ -2,9 +2,11 @@
 export { runScan, type ScanInput, type RunScanOptions } from './core/orchestrator.js';
 export {
   renderJson,
+  renderJsonExport,
   renderText,
   renderSarif,
   renderHtml,
+  renderCsv,
   sortFindingsForReport,
   computeHealthScore,
 } from './reporting/reporters.js';
@@ -31,6 +33,7 @@ export type {
   CrawledPage,
   Finding,
   FindingType,
+  PageRecord,
   ScanConfig,
   ScanResult,
   Severity,

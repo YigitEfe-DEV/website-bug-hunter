@@ -293,6 +293,43 @@
     .upload input[type="file"] { display: none; }
     .upload.dragover { border: 2px dashed var(--info); border-radius: 8px; }
 
+    .history {
+      margin: 32px auto 0;
+      max-width: 720px;
+      text-align: left;
+    }
+    .history header h3 { margin: 0 0 4px; font-size: 14px; }
+    .history header .muted { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+    .history ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    .history li {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .history .h-info { flex: 1 1 280px; min-width: 200px; }
+    .history .h-target { font-weight: 500; word-break: break-all; font-size: 13px; }
+    .history .h-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .history .h-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+    .history .h-actions button,
+    .history button.muted-button {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .history button.muted-button { display: block; margin: 12px auto 0; }
+    .history button:hover { border-color: var(--info); }
+    .history .empty-history { color: var(--muted); font-size: 13px; padding: 12px; text-align: center; border: 1px dashed var(--border); border-radius: 6px; }
+
     .loading {
       padding: 48px 24px;
       text-align: center;
@@ -356,6 +393,14 @@
     <p>Drop a <code>wbh-report.json</code> here, or pick a file. Nothing leaves your browser.</p>
     <label for="file" id="uploadLabel">Choose JSON report</label>
     <input id="file" type="file" accept="application/json,.json" />
+    <section id="historySection" class="history">
+      <header>
+        <h3>Recent reports</h3>
+        <p class="muted">Stored only in this browser's localStorage. No server. Cleared if you clear browser data. Capped at 20 entries.</p>
+      </header>
+      <ul id="historyList" aria-live="polite"></ul>
+      <button id="clearHistory" class="muted-button hide">Clear history</button>
+    </section>
   </section>
 
   <section id="report" class="hide">
@@ -597,6 +642,7 @@
       renderSummary(d);
       populateTypeFilter(d.findings || []);
       renderFindings(d);
+      addToHistory(d);
     }
 
     function renderSummary(d) {
@@ -857,6 +903,204 @@
         if (nf) nf.remove();
       }
     }
+
+    /* ---------- history (browser-local only) ----------
+     *
+     * Storage key: wbh:history:v1 (versioned to allow future migration).
+     * Cap: 20 entries (oldest dropped on overflow). Quota exhausted
+     * errors are swallowed — the viewer still works, just without
+     * persistence for that load.
+     *
+     * Limitations (documented in the UI):
+     *   - per-origin, per-browser: not shared across machines
+     *   - cleared if the user clears browser data or is in private mode
+     *   - no server, no auth — strictly local
+     */
+    const HISTORY_KEY = 'wbh:history:v1';
+    const MAX_HISTORY = 20;
+
+    function historyAvailable() {
+      try {
+        const k = '__wbh_probe__';
+        window.localStorage.setItem(k, '1');
+        window.localStorage.removeItem(k);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    const HISTORY_OK = historyAvailable();
+
+    function loadHistory() {
+      if (!HISTORY_OK) return [];
+      try {
+        const raw = window.localStorage.getItem(HISTORY_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((it) => it && typeof it === 'object' && it.data) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveHistory(items) {
+      if (!HISTORY_OK) return false;
+      try {
+        window.localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+        return true;
+      } catch {
+        return false; // QuotaExceededError or storage disabled
+      }
+    }
+
+    function addToHistory(d) {
+      if (!HISTORY_OK || !d) return;
+      const items = loadHistory();
+      const id = `${d.target || ''}|${d.startedAt || 0}|${d.finishedAt || 0}`;
+      const filtered = items.filter((it) => it.id !== id);
+      filtered.unshift({
+        id,
+        savedAt: Date.now(),
+        target: d.target || '',
+        startedAt: d.startedAt || 0,
+        pagesScanned: d.pagesScanned || 0,
+        findingsCount: (d.findings || []).length,
+        errorCount: (d.findings || []).filter((f) => f.severity === 'error').length,
+        data: d,
+      });
+      const out2 = filtered.slice(0, MAX_HISTORY);
+      saveHistory(out2);
+      renderHistory();
+    }
+
+    function deleteFromHistory(id) {
+      const items = loadHistory().filter((it) => it.id !== id);
+      saveHistory(items);
+      renderHistory();
+    }
+
+    function clearHistoryAction() {
+      saveHistory([]);
+      renderHistory();
+    }
+
+    function renderHistory() {
+      const list = document.getElementById('historyList');
+      const clearBtn = document.getElementById('clearHistory');
+      const section = document.getElementById('historySection');
+      if (!HISTORY_OK) {
+        if (section) {
+          section.innerHTML = '<header><h3>Recent reports</h3><p class="muted">Browser storage is not available in this context (private mode, disabled cookies, or quota exhausted). Reloads will not be persisted.</p></header>';
+        }
+        return;
+      }
+      const items = loadHistory();
+      if (!items.length) {
+        list.innerHTML = '<li class="empty-history">No saved reports yet. Open a JSON file above to start.</li>';
+        clearBtn.classList.add('hide');
+        return;
+      }
+      clearBtn.classList.remove('hide');
+      list.innerHTML = items.map((it) => {
+        const ts = new Date(it.savedAt || Date.now()).toLocaleString();
+        const findingsCount = (it.data && (it.data.findings || []).length) || 0;
+        const errCount = (it.data && (it.data.findings || []).filter((f) => f.severity === 'error').length) || 0;
+        return `<li>
+          <div class="h-info">
+            <div class="h-target">${escape(it.target || '(no target)')}</div>
+            <div class="h-meta">saved ${escape(ts)} · ${it.pagesScanned || 0} pages · ${findingsCount} findings (${errCount} errors)</div>
+          </div>
+          <div class="h-actions">
+            <button data-action="open" data-id="${escape(it.id)}" title="Open in viewer">Open</button>
+            <button data-action="json" data-id="${escape(it.id)}" title="Download JSON">JSON</button>
+            <button data-action="csv" data-id="${escape(it.id)}" title="Download CSV">CSV</button>
+            <button data-action="del" data-id="${escape(it.id)}" title="Delete from history">Delete</button>
+          </div>
+        </li>`;
+      }).join('');
+    }
+
+    const historyList = document.getElementById('historyList');
+    if (historyList) {
+      historyList.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        const id = btn.dataset.id;
+        const items = loadHistory();
+        const item = items.find((it) => it.id === id);
+        if (!item) return;
+        const action = btn.dataset.action;
+        if (state.processing) return;
+        if (action === 'open') {
+          renderReport(item.data);
+        } else if (action === 'json') {
+          downloadBlob(JSON.stringify(item.data, null, 2), 'application/json', filenameFor(item.data, 'json'));
+        } else if (action === 'csv') {
+          downloadBlob(csvFromReport(item.data), 'text/csv;charset=utf-8', filenameFor(item.data, 'csv'));
+        } else if (action === 'del') {
+          deleteFromHistory(id);
+        }
+      });
+    }
+
+    const clearBtn = document.getElementById('clearHistory');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        if (window.confirm('Clear all saved reports? This only affects this browser.')) clearHistoryAction();
+      });
+    }
+
+    function filenameFor(d, ext) {
+      let host = 'report';
+      try {
+        const u = new URL(d.target || '');
+        host = u.host || host;
+      } catch { /* keep default */ }
+      const ts = new Date(d.startedAt || Date.now()).toISOString().replace(/[:.]/g, '-');
+      return `wbh-${host.replace(/[^a-z0-9.-]/gi, '_')}-${ts}.${ext}`;
+    }
+
+    function downloadBlob(content, mime, filename) {
+      try {
+        const blob = new Blob([content], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+      } catch (e) {
+        window.alert('Download failed: ' + (e && e.message ? e.message : e));
+      }
+    }
+
+    function csvField(s) {
+      if (s === undefined || s === null) return '';
+      const str = String(s);
+      if (!/[",\r\n]/.test(str)) return str;
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+
+    function csvFromReport(data) {
+      const header = ['id', 'type', 'severity', 'confidence', 'page', 'message', 'explanation', 'fix', 'affected_pages', 'detail'];
+      const lines = [header.map(csvField).join(',')];
+      for (const f of (data.findings || [])) {
+        const row = [
+          f.id, f.type, f.severity, f.confidence, f.page, f.message,
+          f.explanation || '',
+          f.fix || '',
+          Array.isArray(f.affectedPages) ? f.affectedPages.join(' | ') : '',
+          f.detail ? JSON.stringify(f.detail) : '',
+        ];
+        lines.push(row.map(csvField).join(','));
+      }
+      return lines.join('\r\n') + '\r\n';
+    }
+
+    // Initial history paint (also handles the "storage unavailable" notice).
+    renderHistory();
   </script>
 </body>
 </html>

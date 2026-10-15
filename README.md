@@ -48,12 +48,19 @@ npx playwright install chromium
 # Save a self-contained HTML report
 ./node_modules/.bin/wbh https://example.com --format html --output report.html
 
+# Save a sanitised, document-enriched JSON export
+./node_modules/.bin/wbh https://example.com --format export --output report.export.json
+
+# Save a CSV for spreadsheet triage
+./node_modules/.bin/wbh https://example.com --format csv --output report.csv
+
 # Show per-page progress on stderr (no fake completion %)
 ./node_modules/.bin/wbh https://example.com --progress
 ```
 
 Or open `web/viewer.html` in a browser and drop a JSON report onto it
-for an interactive dashboard.
+for an interactive dashboard. The viewer keeps a local history of the
+last 20 reports loaded (see [History](#history)).
 
 ## CLI
 
@@ -68,7 +75,7 @@ wbh <url> [flags]
   --user-agent <ua>       User-Agent string
   --timeout <ms>          Per-request timeout in ms (default 15000)
   --output <file>         Write report to file (default stdout)
-  --format <fmt>          json|text|sarif|html (default text)
+  --format <fmt>          json|text|sarif|html|csv|export (default text)
   --no-robots             Ignore robots.txt
   --allow-private         Allow scanning private IP ranges (NEVER in production)
   --quiet                 Suppress info logs
@@ -132,7 +139,21 @@ The JSON report has the following shape (see `docs/SECURITY-REVIEW.md`):
 ```
 
 The report is validated and sanitized before write. Forbidden fields
-(cookies, bearer tokens, etc.) are stripped from any `detail` bag.
+(cookies, bearer tokens, etc.) are stripped from any `detail` bag, and
+stack-trace frames are scrubbed from any `errors` string before export.
+
+### Export formats
+
+| Format | What you get | When to use it |
+|---|---|---|
+| `--format json` | The raw, sanitised `ScanResult`. | Piping into other tools that already know the schema. |
+| `--format export` | A wrapped JSON envelope with `tool`, `scan`, `configuration`, `pages`, `findings`, `summary`, `errors`, `limitations`, and `disclaimer` keys. | Long-term archival. Forward-compatible (`schema: "wbh-report-export-1.0"`). |
+| `--format csv` | RFC 4180 CSV with one finding per row. Columns: `id, type, severity, confidence, page, message, explanation, fix, affected_pages, detail`. | Spreadsheet triage. |
+| `--format sarif` | SARIF 2.1.0 for GitHub code scanning. | CI / SAST integration. |
+| `--format html` | Self-contained HTML report. | Sharing with non-technical reviewers. |
+| `--format text` | Human-readable plain text. | Terminal output, log aggregation. |
+
+The `export` and CSV formats share the same sanitiser as `json`: they never include cookies, authorization headers, environment variables, stack traces, or other internal infrastructure details. The `disclaimer` and `limitations` arrays make the scope of the scan explicit in the export itself.
 
 ## Architecture
 
@@ -173,6 +194,25 @@ npm run build          # tsup, ESM, dts
 - **Playwright is optional**: install separately to enable JS-error and
   mobile scanners.
 - **No config file**: CLI flags only.
+
+## History
+
+The standalone viewer at `web/viewer.html` keeps a lightweight history
+of the last 20 reports **in the browser's `localStorage` only**.
+
+| Aspect | Behavior |
+|---|---|
+| Storage | `localStorage` key `wbh:history:v1`. No server, no cookies, no auth. |
+| Scope | Per-origin, per-browser. Private-mode / disabled-storage contexts are detected and the viewer falls back gracefully. |
+| Capacity | Up to 20 entries. Oldest dropped on overflow. Per-entry size is bounded by the JSON you loaded. |
+| Re-load | Open / JSON / CSV / Delete per entry. Clear-history button empties the list. |
+| Sensitive | The full sanitised report is stored. Cookies, auth headers, env vars, and stack traces are stripped before storage. The viewer UI is single-page, server-less, and never sends the report anywhere. |
+| Lifetime | Cleared if the user clears browser data or switches browser/profile. |
+
+There is no server-side history, no database, and no authentication.
+The CLI tool itself does not retain history — it is one-shot. Persistent
+history across machines, users, or runs requires a server you operate
+yourself; that's out of scope for this phase.
 
 ## License
 

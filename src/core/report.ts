@@ -3,6 +3,15 @@
  * piped to stdout passes through `validateAndSanitize` so we never
  * emit malformed JSON, oversized blobs, or accidentally-leaked
  * sensitive fields.
+ *
+ * The sanitizer is the LAST line of defense before a report leaves
+ * the process. It enforces:
+ *   - shape: required fields exist and are well-typed
+ *   - size: long strings, large lists, nested blobs are truncated
+ *   - secrets: a denylist of forbidden keys strips credential-shaped
+ *     fields from `detail` bags
+ *   - control characters: stripped from every string
+ *   - stack traces: scrubbed from `errors[]` strings
  */
 
 import type { Confidence, Finding, FindingType, ScanResult, Severity } from '../types/index.js';
@@ -13,11 +22,26 @@ const MAX_FINDINGS = 100_000;
 /** Maximum length for any string field in the report. */
 const MAX_STRING_LEN = 2048;
 
-/** Fields that MUST NOT appear in a serialized report (defense in depth). */
+/**
+ * Fields that MUST NOT appear in a serialized report (defense in depth).
+ * Matching is case-insensitive. Sub-keys are allowed (e.g. "x-auth-token"
+ * is fine; "authorization" is not). This list is intentionally broad — if
+ * a scanner accidentally logs a credential under any of these names, it
+ * does not reach disk.
+ */
 const FORBIDDEN_TOP_LEVEL_KEYS = new Set([
-  'auth', 'authorization', 'cookie', 'cookies', 'session', 'token', 'password',
-  'secret', 'apiKey', 'api_key', 'accessToken', 'access_token', 'refreshToken',
-  'private', 'privateKey', 'private_key', 'bearer',
+  // Credentials and secrets
+  'auth', 'authorization', 'cookie', 'cookies', 'set-cookie', 'session', 'token',
+  'password', 'passwd', 'secret', 'apiKey', 'api_key', 'apikey',
+  'accessToken', 'access_token', 'refreshToken', 'refresh_token',
+  'private', 'privateKey', 'private_key',
+  'bearer', 'jwt',
+  // Errors / internal
+  'stack', 'stacktrace', 'stack_trace', 'cause', 'errno',
+  // Environment
+  'env', 'environment',
+  // Internal infra
+  'hostname', 'host', 'pid', 'process', 'cwd',
 ]);
 
 const ALLOWED_FINDING_TYPES = new Set<FindingType>([
@@ -30,6 +54,17 @@ const ALLOWED_FINDING_TYPES = new Set<FindingType>([
 const ALLOWED_SEVERITIES = new Set<Severity>(['error', 'warning', 'info']);
 
 const ALLOWED_CONFIDENCES = new Set<Confidence>(['confirmed', 'probable', 'inconclusive']);
+
+/**
+ * Patterns that look like a JS / Node stack trace. We scrub them from
+ * error strings before serialisation. The pattern matches the canonical
+ * Node form ("    at funcName (file:line:col)") and V8 snippets.
+ *
+ * Note: these regexes are constructed fresh on each call to scrubStackTrace
+ * to avoid `lastIndex` statefulness when the global flag is set.
+ */
+const STACK_FRAME_PATTERN = '\\s+at\\s+.+?\\(.+?:\\d+:\\d+\\)';
+const V8_HEADER_PATTERN = '^[A-Z][a-z]+Error:[\\s\\S]*?(?=\\n\\s+at\\s|$)';
 
 export class ReportValidationError extends Error {
   constructor(message: string) {
@@ -75,8 +110,10 @@ export function validateAndSanitize(r: ScanResult): ScanResult {
   // Sanitize target: no control characters, no newlines.
   r.target = sanitizeString(r.target, MAX_STRING_LEN);
 
-  // Sanitize errors list.
-  r.errors = r.errors.map((e) => (typeof e === 'string' ? sanitizeString(e, MAX_STRING_LEN) : ''));
+  // Sanitize errors list — strip stack traces and control characters.
+  r.errors = r.errors
+    .filter((e): e is string => typeof e === 'string')
+    .map((e) => scrubStackTrace(sanitizeString(e, MAX_STRING_LEN)));
 
   // Sanitize cache stats if present.
   if (r.cache) {
@@ -84,6 +121,30 @@ export function validateAndSanitize(r: ScanResult): ScanResult {
       linkProbes: Math.max(0, Math.floor(Number(r.cache.linkProbes) || 0)),
       assetProbes: Math.max(0, Math.floor(Number(r.cache.assetProbes) || 0)),
     };
+  }
+
+  // Sanitize config if present. Strip userAgent if it looks credential-like;
+  // the rest are numbers/booleans and are safe.
+  if (r.config && typeof r.config === 'object') {
+    const c = r.config;
+    if (typeof c.userAgent === 'string') {
+      c.userAgent = sanitizeString(c.userAgent, 256);
+    }
+  }
+
+  // Sanitize page records if present.
+  if (Array.isArray(r.pages)) {
+    r.pages = r.pages
+      .filter((p): p is NonNullable<typeof p> & object => p !== null && typeof p === 'object')
+      .map((p) => ({
+        url: sanitizeString(typeof p.url === 'string' ? p.url : '', MAX_STRING_LEN),
+        finalUrl: sanitizeString(typeof p.finalUrl === 'string' ? p.finalUrl : '', MAX_STRING_LEN),
+        status: Math.max(0, Math.floor(Number(p.status) || 0)),
+        fetchedAt: Math.max(0, Math.floor(Number(p.fetchedAt) || 0)),
+        bytes: Math.max(0, Math.floor(Number(p.bytes) || 0)),
+      }))
+      .filter((p) => p.url.length > 0 || p.finalUrl.length > 0);
+    if (r.pages.length > MAX_FINDINGS) r.pages = r.pages.slice(0, MAX_FINDINGS);
   }
 
   // Sanitize findings.
@@ -113,7 +174,7 @@ function sanitizeFinding(f: Finding): Finding | null {
     f.confidence = 'probable';
   }
   if (typeof f.message !== 'string') return null;
-  f.message = sanitizeString(f.message, MAX_STRING_LEN);
+  f.message = scrubStackTrace(sanitizeString(f.message, MAX_STRING_LEN));
   if (typeof f.page !== 'string') return null;
   f.page = sanitizeString(f.page, MAX_STRING_LEN);
 
@@ -147,13 +208,15 @@ function sanitizeFinding(f: Finding): Finding | null {
   if (f.detail && typeof f.detail === 'object') {
     const cleaned: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(f.detail)) {
-      if (FORBIDDEN_TOP_LEVEL_KEYS.has(k)) continue;
+      if (FORBIDDEN_TOP_LEVEL_KEYS.has(k.toLowerCase())) continue;
       if (typeof v === 'string') {
-        cleaned[k] = sanitizeString(v, 512);
+        cleaned[k] = scrubStackTrace(sanitizeString(v, 512));
       } else if (typeof v === 'number' || typeof v === 'boolean' || v === null) {
         cleaned[k] = v;
       } else if (Array.isArray(v) && v.every((x) => typeof x === 'string' || typeof x === 'number')) {
-        cleaned[k] = (v as Array<string | number>).slice(0, 50);
+        const arr = (v as Array<string | number>).slice(0, 50);
+        // Sanitize each string and scrub stacks.
+        cleaned[k] = arr.map((x) => (typeof x === 'string' ? scrubStackTrace(x) : x));
       }
     }
     f.detail = cleaned;
@@ -167,8 +230,23 @@ function sanitizeFinding(f: Finding): Finding | null {
   return f;
 }
 
+/** Strip ASCII control chars and limit length. */
 function sanitizeString(s: string, max: number): string {
-  // Strip ASCII control chars and limit length.
   const cleaned = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
   return cleaned.length > max ? cleaned.substring(0, max) : cleaned;
+}
+
+/**
+ * Strip V8 stack-trace frames from a string. Replaces the entire stack
+ * portion with `[stack trace removed for export]` so the surrounding
+ * context (the error name, the operation that failed) is preserved.
+ */
+function scrubStackTrace(s: string): string {
+  // Build regexes fresh each call to avoid lastIndex statefulness.
+  const stackRe = new RegExp(STACK_FRAME_PATTERN, 'g');
+  const headerRe = new RegExp(V8_HEADER_PATTERN, 'gm');
+  let out = s.replace(stackRe, '');
+  out = out.replace(headerRe, '');
+  out = out.replace(/\n{3,}/g, '\n\n');
+  return out.trim();
 }

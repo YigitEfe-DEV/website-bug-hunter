@@ -136,6 +136,24 @@ export const DEFAULT_SCAN_CONFIG: ScanConfig = {
   allowPrivate: false,
 };
 
+/**
+ * Lightweight page record attached to a ScanResult. No HTML body — that
+ * would balloon the export. Used by the export wrapper so consumers can
+ * see WHICH pages were crawled without re-running the scan.
+ */
+export interface PageRecord {
+  /** The URL as fetched (may differ from finalUrl after redirects). */
+  url: string;
+  /** The final URL after any redirects. */
+  finalUrl: string;
+  /** HTTP status of the final response. */
+  status: number;
+  /** When the page was fetched (ms since epoch). */
+  fetchedAt: number;
+  /** Bytes downloaded for the response body (truncated to maxBytes). */
+  bytes: number;
+}
+
 export interface ScanResult {
   target: string;
   startedAt: number;
@@ -149,4 +167,8 @@ export interface ScanResult {
   budgetExhausted: boolean;
   /** Probe cache statistics at scan end (informational). */
   cache?: { linkProbes: number; assetProbes: number };
+  /** Effective configuration the scan ran with (populated by orchestrator). */
+  config?: ScanConfig;
+  /** Lightweight page records for what was actually crawled. */
+  pages?: PageRecord[];
 }

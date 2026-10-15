@@ -4,6 +4,145 @@ export function renderJson(result: ScanResult): string {
   return JSON.stringify(result, null, 2);
 }
 
+/**
+ * Richer JSON export that wraps the (already-sanitised) ScanResult with
+ * metadata, the effective configuration, a limitations section, and a
+ * legal disclaimer. The wrapper itself is not a violation of the
+ * "no fabricated data" rule — every field is derived from the scan
+ * itself or from the static tool metadata.
+ *
+ * Output schema is documented in the schema field below. The format
+ * is forward-compatible: new keys may be added but no existing key
+ * will be removed or have its meaning changed without a major version
+ * bump of `schema`.
+ */
+export function renderJsonExport(result: ScanResult, options?: { toolVersion?: string }): string {
+  const toolVersion = options?.toolVersion ?? '0.1.0';
+  const sevCounts = countBySeverity(result);
+  const confCounts = countByConfidence(result);
+
+  const wrapper: Record<string, unknown> = {
+    schema: 'wbh-report-export-1.0',
+    tool: {
+      name: 'website-bug-hunter',
+      version: toolVersion,
+      url: 'https://github.com/website-bug-hunter',
+    },
+    exportedAt: Date.now(),
+    scan: {
+      target: result.target,
+      startedAt: result.startedAt,
+      finishedAt: result.finishedAt,
+      durationMs: result.durationMs,
+      pagesScanned: result.pagesScanned,
+      pagesFailed: result.pagesFailed,
+      pagesSkipped: result.pagesSkipped,
+      budgetExhausted: result.budgetExhausted,
+    },
+    configuration: result.config ?? null,
+    pages: result.pages ?? [],
+    findings: result.findings,
+    summary: {
+      totalFindings: result.findings.length,
+      bySeverity: sevCounts,
+      byConfidence: confCounts,
+      heuristicScore: computeHealthScore(result.findings),
+      cacheStats: result.cache ?? null,
+    },
+    errors: result.errors,
+    limitations: buildLimitations(),
+    disclaimer:
+      'Only scan sites you are authorized to test. Unauthorized scanning may violate computer-misuse laws and terms of service in your jurisdiction.',
+  };
+
+  return JSON.stringify(wrapper, null, 2);
+}
+
+/**
+ * Render findings as RFC 4180 CSV. One row per finding. The header
+ * row is included. Affected-pages arrays are joined with " | ".
+ *
+ * Fields containing commas, double quotes, or newlines are quoted;
+ * embedded double quotes are doubled per RFC 4180. Lines are CRLF-
+ * terminated for spreadsheet compatibility.
+ *
+ * Empty reports produce a header row with no data rows — that's a
+ * valid, parseable CSV.
+ */
+export function renderCsv(result: ScanResult): string {
+  const header = [
+    'id',
+    'type',
+    'severity',
+    'confidence',
+    'page',
+    'message',
+    'explanation',
+    'fix',
+    'affected_pages',
+    'detail',
+  ];
+  const lines: string[] = [header.map(csvField).join(',')];
+  for (const f of result.findings) {
+    const row = [
+      f.id,
+      f.type,
+      f.severity,
+      f.confidence,
+      f.page,
+      f.message,
+      f.explanation ?? '',
+      f.fix ?? '',
+      Array.isArray(f.affectedPages) ? f.affectedPages.join(' | ') : '',
+      f.detail ? JSON.stringify(f.detail) : '',
+    ];
+    lines.push(row.map(csvField).join(','));
+  }
+  // RFC 4180 specifies CRLF line endings.
+  return lines.join('\r\n') + '\r\n';
+}
+
+function csvField(s: string): string {
+  if (s === undefined || s === null) return '';
+  const needsQuoting = /[",\r\n]/.test(s);
+  if (!needsQuoting) return s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+function countBySeverity(result: ScanResult): Record<'error' | 'warning' | 'info', number> {
+  const out = { error: 0, warning: 0, info: 0 };
+  for (const f of result.findings) out[f.severity]++;
+  return out;
+}
+
+function countByConfidence(result: ScanResult): Record<Confidence, number> {
+  const out: Record<Confidence, number> = { confirmed: 0, probable: 0, inconclusive: 0 };
+  for (const f of result.findings) {
+    out[f.confidence] = (out[f.confidence] || 0) + 1;
+  }
+  return out;
+}
+
+/**
+ * Static list of known scope limitations. Kept here (not in the
+ * orchestrator) because it documents what the tool does NOT do —
+ * it is metadata about the tool, not data about a specific scan.
+ */
+function buildLimitations(): string[] {
+  return [
+    'Same-origin crawl only: cross-origin links are probed for status but not crawled.',
+    'No authentication: pages behind login are not reachable.',
+    'Static HTML only by default: pages rendered entirely via client JS will appear empty and trigger a wave of meta_missing findings. Use --render-js if Playwright is installed.',
+    'JS-error and mobile-overflow scans require Playwright; if not installed, those checks are skipped with an INFO finding.',
+    'No resume on crash: long scans do not survive restart.',
+    'SEO/accessibility findings are scoped heuristics. We do NOT claim full SEO audit or accessibility (WCAG) conformance.',
+    'The heuristic health score is project-defined, not an industry standard.',
+    'No rate limiting beyond operator-configured --rate; large scans may trigger defensive measures on the target host.',
+    'Robots.txt is respected by default; --no-robots is opt-in and should only be used on sites you control or have authorization for.',
+    'Static HTML report includes all findings pre-rendered; large reports (>10k findings) may be slow to open in a browser.',
+  ];
+}
+
 const SEVERITY_ORDER: Record<'error' | 'warning' | 'info', number> = { error: 0, warning: 1, info: 2 };
 const CONFIDENCE_ORDER: Record<Confidence, number> = { confirmed: 0, probable: 1, inconclusive: 2 };
 
