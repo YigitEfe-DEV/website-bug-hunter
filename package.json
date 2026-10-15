@@ -1,0 +1,54 @@
+{
+  "name": "website-bug-hunter",
+  "version": "0.1.0",
+  "description": "Open-source website bug & quality scanner (broken links, images, JS errors, redirects, metadata, mobile).",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "wbh": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "wbh": "node dist/cli/index.js"
+  },
+  "dependencies": {
+    "cheerio": "1.0.0",
+    "commander": "12.1.0",
+    "p-limit": "6.1.0",
+    "pino": "9.5.0"
+  },
+  "optionalDependencies": {
+    "playwright": "1.49.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@typescript-eslint/eslint-plugin": "8.18.1",
+    "@typescript-eslint/parser": "8.18.1",
+    "eslint": "9.17.0",
+    "prettier": "3.4.2",
+    "tsup": "8.3.5",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  }
+}
