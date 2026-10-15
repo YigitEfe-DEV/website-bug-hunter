@@ -2,21 +2,27 @@ import { load } from 'cheerio';
 import type { CrawledPage, Finding } from '../types/index.js';
 
 /**
- * Accessibility audit. Cheap, static, no fetch. Findings:
- *   - <html lang> missing (already covered by meta scanner; included here for completeness)
- *   - <img> missing alt
- *   - <img> alt is empty (decorative should be marked with role="presentation" or alt="")
- *     -> we only WARN when alt is missing entirely; alt="" is acceptable.
- *   - multiple <h1> on the same page
- *   - no <h1> at all
- *   - heading order skip (h1 -> h3 with no h2)
+ * Accessibility audit. Cheap, static, no fetch.
+ *
+ * Confidence: all findings here are PROBABLE. A missing alt attribute is
+ * a strong signal that assistive tech will not announce the image, but
+ * the image may legitimately be decorative (role="presentation"). WCAG
+ * conformance is a much larger surface than what this scanner checks —
+ * treat the report as a starting point, not a certification.
+ *
+ * Detection:
+ *   - <img> with no alt attribute (warning)
+ *   - <img> with empty alt is acceptable — not flagged
+ *   - Page has no <h1> (warning)
+ *   - Page has multiple <h1>s (warning)
+ *   - Heading-level skip (h1 -> h3) (info)
  */
 export function scanAccessibility(page: CrawledPage): Finding[] {
   if (!page.isHtml) return [];
   const $ = load(page.html, { xml: { decodeEntities: false } });
   const out: Finding[] = [];
 
-  // Image alt text
+  // Image alt text — only flag absent, not empty (empty is valid for decorative).
   $('img').each((i, el) => {
     const $img = $(el);
     const alt = $img.attr('alt');
@@ -26,9 +32,12 @@ export function scanAccessibility(page: CrawledPage): Finding[] {
         id: `a11y-img-alt-${shortHash(page.finalUrl + src + i)}`,
         type: 'accessibility',
         severity: 'warning',
+        confidence: 'probable',
         message: `<img> is missing alt attribute: ${trunc(src)}`,
         page: page.finalUrl,
         detail: { tag: 'img', attribute: 'alt' },
+        explanation:
+          'Screen readers cannot announce the image. If the image is decorative, mark it with alt="" or role="presentation".',
         fix: `Add a descriptive alt attribute. Example: <img src="..." alt="A short description of the image">`,
       });
     }
@@ -50,19 +59,25 @@ export function scanAccessibility(page: CrawledPage): Finding[] {
       id: `a11y-no-h1-${shortHash(page.finalUrl)}`,
       type: 'accessibility',
       severity: 'warning',
+      confidence: 'confirmed',
       message: 'Page has no <h1> heading',
       page: page.finalUrl,
-      fix: 'Each page should have exactly one <h1> as the top-level heading.',
+      explanation:
+        'Pages without an h1 give assistive tech no top-level landmark. Most accessibility checklists require exactly one h1 per page.',
+      fix: 'Add a single <h1> at the start of the main content that summarises the page.',
     });
   } else if (h1s.length > 1) {
     out.push({
       id: `a11y-multi-h1-${shortHash(page.finalUrl)}`,
       type: 'accessibility',
       severity: 'warning',
+      confidence: 'confirmed',
       message: `Page has ${h1s.length} <h1> headings (expect 1)`,
       page: page.finalUrl,
       detail: { count: h1s.length },
-      fix: 'Use a single <h1> per page; demote others to <h2> or below.',
+      explanation:
+        'Multiple h1 elements weaken the document outline and confuse screen-reader heading navigation.',
+      fix: 'Use a single <h1>; demote others to <h2> or below.',
     });
   }
 
@@ -74,10 +89,13 @@ export function scanAccessibility(page: CrawledPage): Finding[] {
         id: `a11y-heading-skip-${shortHash(page.finalUrl + h.index)}`,
         type: 'accessibility',
         severity: 'info',
+        confidence: 'probable',
         message: `Heading level skipped: <h${prevLevel}> followed by <h${h.level}> ("${h.text}")`,
         page: page.finalUrl,
         detail: { from: prevLevel, to: h.level },
-        fix: 'Don\'t skip heading levels (h1 → h3). Use consecutive levels for assistive tech.',
+        explanation:
+          'Skipping heading levels (e.g. h1 -> h3) breaks the document outline and can disorient assistive-tech users.',
+        fix: 'Don\'t skip heading levels. Use consecutive levels (h1, h2, h3, …).',
       });
       // Only report the first skip to avoid noise.
       break;

@@ -5,7 +5,7 @@
  * sensitive fields.
  */
 
-import type { Finding, FindingType, ScanResult, Severity } from '../types/index.js';
+import type { Confidence, Finding, FindingType, ScanResult, Severity } from '../types/index.js';
 
 /** Maximum findings per report. Above this, oldest findings get truncated. */
 const MAX_FINDINGS = 100_000;
@@ -28,6 +28,8 @@ const ALLOWED_FINDING_TYPES = new Set<FindingType>([
 ]);
 
 const ALLOWED_SEVERITIES = new Set<Severity>(['error', 'warning', 'info']);
+
+const ALLOWED_CONFIDENCES = new Set<Confidence>(['confirmed', 'probable', 'inconclusive']);
 
 export class ReportValidationError extends Error {
   constructor(message: string) {
@@ -106,10 +108,40 @@ function sanitizeFinding(f: Finding): Finding | null {
   if (typeof f.severity !== 'string' || !ALLOWED_SEVERITIES.has(f.severity as Severity)) {
     f.severity = 'warning';
   }
+  if (typeof f.confidence !== 'string' || !ALLOWED_CONFIDENCES.has(f.confidence as Confidence)) {
+    // Missing or invalid confidence — default to probable.
+    f.confidence = 'probable';
+  }
   if (typeof f.message !== 'string') return null;
   f.message = sanitizeString(f.message, MAX_STRING_LEN);
   if (typeof f.page !== 'string') return null;
   f.page = sanitizeString(f.page, MAX_STRING_LEN);
+
+  // Sanitize affectedPages (capped to 50 entries to keep reports bounded).
+  if (f.affectedPages !== undefined) {
+    if (!Array.isArray(f.affectedPages)) {
+      delete f.affectedPages;
+    } else {
+      const cleaned: string[] = [];
+      const seen = new Set<string>();
+      for (const p of f.affectedPages) {
+        if (typeof p !== 'string') continue;
+        const s = sanitizeString(p, MAX_STRING_LEN);
+        if (s.length === 0 || seen.has(s)) continue;
+        seen.add(s);
+        cleaned.push(s);
+        if (cleaned.length >= 50) break;
+      }
+      if (cleaned.length === 0) delete f.affectedPages;
+      else if (cleaned.length === 1 && cleaned[0] === f.page) delete f.affectedPages;
+      else f.affectedPages = cleaned;
+    }
+  }
+
+  // Sanitize optional explanation if present.
+  if (f.explanation !== undefined && typeof f.explanation === 'string') {
+    f.explanation = sanitizeString(f.explanation, 1024);
+  }
 
   // Strip unknown keys from detail (no blobs, no secrets).
   if (f.detail && typeof f.detail === 'object') {

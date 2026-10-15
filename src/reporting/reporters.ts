@@ -1,4 +1,4 @@
-import type { ScanResult, FindingType } from '../types/index.js';
+import type { Confidence, ScanResult, FindingType } from '../types/index.js';
 
 export function renderJson(result: ScanResult): string {
   return JSON.stringify(result, null, 2);
@@ -10,9 +10,9 @@ export function renderJson(result: ScanResult): string {
  *   2. within a severity, group by type
  *   3. within a type, stable by id
  */
-export function sortFindingsForReport<T extends { severity: 'error' | 'warning' | 'info'; type: string; id: string }>(
-  findings: T[],
-): T[] {
+export function sortFindingsForReport<
+  T extends { severity: 'error' | 'warning' | 'info'; type: string; id: string },
+>(findings: T[]): T[] {
   const sev = (s: string) => (s === 'error' ? 0 : s === 'warning' ? 1 : 2);
   return [...findings].sort((a, b) => {
     const sd = sev(a.severity) - sev(b.severity);
@@ -45,11 +45,20 @@ export function renderText(result: ScanResult): string {
     if (result.errors.length > 20) lines.push(`  ... ${result.errors.length - 20} more`);
   }
 
-  // Severity summary
+  // Severity + confidence summary
   const sevCounts = { error: 0, warning: 0, info: 0 };
-  for (const f of result.findings) sevCounts[f.severity]++;
+  const confCounts: Record<Confidence, number> = { confirmed: 0, probable: 0, inconclusive: 0 };
+  for (const f of result.findings) {
+    sevCounts[f.severity]++;
+    confCounts[f.confidence]++;
+  }
   lines.push('');
-  lines.push(`By severity:  ${sevCounts.error} errors · ${sevCounts.warning} warnings · ${sevCounts.info} info`);
+  lines.push(
+    `By severity:  ${sevCounts.error} errors · ${sevCounts.warning} warnings · ${sevCounts.info} info`,
+  );
+  lines.push(
+    `By confidence: ${confCounts.confirmed} confirmed · ${confCounts.probable} probable · ${confCounts.inconclusive} inconclusive`,
+  );
 
   const sorted = sortFindingsForReport(result.findings);
   const grouped = groupBy(sorted, (f) => f.type);
@@ -57,9 +66,18 @@ export function renderText(result: ScanResult): string {
   for (const [type, items] of grouped) {
     lines.push(`▸ ${type} (${items.length})`);
     for (const f of items) {
-      lines.push(`    [${f.severity.padEnd(7)}] ${f.message}  (${truncate(f.page, 60)})`);
+      const conf = f.confidence.padEnd(11);
+      lines.push(
+        `    [${f.severity.padEnd(7)}] [${conf}] ${f.message}  (${truncate(f.page, 60)})`,
+      );
+      if (f.affectedPages && f.affectedPages.length > 1) {
+        lines.push(`              also on: ${f.affectedPages.slice(1, 6).map((p) => truncate(p, 50)).join(', ')}${f.affectedPages.length > 6 ? ` …+${f.affectedPages.length - 6}` : ''}`);
+      }
+      if (f.explanation) {
+        lines.push(`              why:    ${truncate(f.explanation, 80)}`);
+      }
       if (f.fix) {
-        lines.push(`              fix: ${truncate(f.fix, 80)}`);
+        lines.push(`              fix:    ${truncate(f.fix, 80)}`);
       }
     }
     lines.push('');
@@ -90,7 +108,13 @@ export function renderSarif(result: ScanResult): string {
         physicalLocation: {
           artifactLocation: { uri: f.page },
         },
-        properties: { ...f.detail, fix: f.fix },
+        properties: {
+          ...f.detail,
+          fix: f.fix,
+          confidence: f.confidence,
+          explanation: f.explanation,
+          affectedPages: f.affectedPages,
+        },
       },
     ],
   }));
@@ -178,24 +202,35 @@ export function renderHtml(result: ScanResult): string {
     });
   const bySeverity = (s: 'error' | 'warning' | 'info') =>
     result.findings.filter((f) => f.severity === s).length;
+  const byConfidence = (c: Confidence) =>
+    result.findings.filter((f) => f.confidence === c).length;
   const sorted = sortFindingsForReport(result.findings);
   const findingsHtml = sorted
     .map((f) => {
       const detail = f.detail
-        ? `<details class="detail"><summary>Details</summary><pre>${escape(JSON.stringify(f.detail, null, 2))}</pre></details>`
+        ? `<details class="detail"><summary>Evidence</summary><pre>${escape(JSON.stringify(f.detail, null, 2))}</pre></details>`
         : '';
       const fix = f.fix
         ? `<details class="fix" open><summary>Fix</summary><pre>${escape(f.fix)}</pre></details>`
         : '';
-      return `<article class="finding finding-${f.severity}" data-type="${escape(f.type)}">
+      const explanation = f.explanation
+        ? `<details class="why" open><summary>Why this matters</summary><p>${escape(f.explanation)}</p></details>`
+        : '';
+      const affected = f.affectedPages && f.affectedPages.length > 1
+        ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escape(p)}" rel="noopener">${escape(p)}</a></li>`).join('')}</ul></details>`
+        : '';
+      return `<article class="finding finding-${f.severity} confidence-${f.confidence}" data-type="${escape(f.type)}" data-confidence="${escape(f.confidence)}">
   <header>
-    <span class="badge">${escape(f.severity)}</span>
+    <span class="badge severity">${escape(f.severity)}</span>
+    <span class="badge confidence confidence-${f.confidence}">${escape(f.confidence)}</span>
     <span class="type">${escape(f.type)}</span>
   </header>
   <p class="msg">${escape(f.message)}</p>
   <p class="page"><a href="${escape(f.page)}" rel="noopener">${escape(f.page)}</a></p>
+  ${explanation}
   ${fix}
   ${detail}
+  ${affected}
 </article>`;
     })
     .join('\n');
@@ -220,6 +255,9 @@ export function renderHtml(result: ScanResult): string {
       --error: #ff6b6b;
       --warning: #f5c84b;
       --info: #74c0fc;
+      --confirmed: #51cf66;
+      --probable: #74c0fc;
+      --inconclusive: #8c93a3;
       --link: #8ab4ff;
     }
     @media (prefers-color-scheme: light) {
@@ -232,6 +270,9 @@ export function renderHtml(result: ScanResult): string {
         --error: #c92a2a;
         --warning: #b07b00;
         --info: #1971c2;
+        --confirmed: #2b8a3e;
+        --probable: #1971c2;
+        --inconclusive: #5a6170;
         --link: #1864ab;
       }
     }
@@ -247,6 +288,9 @@ export function renderHtml(result: ScanResult): string {
     .stat.error .v { color: var(--error); }
     .stat.warning .v { color: var(--warning); }
     .stat.info .v { color: var(--info); }
+    .stat.confirmed .v { color: var(--confirmed); }
+    .stat.probable .v { color: var(--probable); }
+    .stat.inconclusive .v { color: var(--inconclusive); }
     .controls {
       padding: 0 24px 12px;
       display: flex;
@@ -276,11 +320,15 @@ export function renderHtml(result: ScanResult): string {
     }
     main { padding: 8px 24px 64px; display: grid; gap: 12px; }
     .finding { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
-    .finding header { padding: 0; border: none; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .finding header { padding: 0; border: none; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
     .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .finding-error .badge { background: rgba(255,107,107,0.15); color: var(--error); }
-    .finding-warning .badge { background: rgba(245,200,75,0.15); color: var(--warning); }
-    .finding-info .badge { background: rgba(116,192,252,0.15); color: var(--info); }
+    .badge.severity { background: rgba(255,255,255,0.04); }
+    .finding-error .badge.severity { background: rgba(255,107,107,0.15); color: var(--error); }
+    .finding-warning .badge.severity { background: rgba(245,200,75,0.15); color: var(--warning); }
+    .finding-info .badge.severity { background: rgba(116,192,252,0.15); color: var(--info); }
+    .badge.confidence.confirmed { background: rgba(81,207,102,0.15); color: var(--confirmed); }
+    .badge.confidence.probable { background: rgba(116,192,252,0.15); color: var(--probable); }
+    .badge.confidence.inconclusive { background: rgba(140,147,163,0.15); color: var(--inconclusive); }
     .type { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
     .msg { margin: 4px 0; font-size: 14px; }
     .page { margin: 4px 0; font-size: 12px; color: var(--muted); word-break: break-all; }
@@ -290,6 +338,8 @@ export function renderHtml(result: ScanResult): string {
     details summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
     details pre { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 12px; margin: 4px 0 0; }
     details.fix summary { color: var(--info); }
+    details.why summary { color: var(--probable); }
+    details ul { margin: 4px 0; padding-left: 18px; font-size: 12px; }
     .empty { padding: 48px 24px; text-align: center; color: var(--muted); }
     footer { padding: 16px 24px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
     .hide { display: none !important; }
@@ -312,13 +362,19 @@ export function renderHtml(result: ScanResult): string {
     <div class="stat error"><div class="v">${bySeverity('error')}</div><div class="l">errors</div></div>
     <div class="stat warning"><div class="v">${bySeverity('warning')}</div><div class="l">warnings</div></div>
     <div class="stat info"><div class="v">${bySeverity('info')}</div><div class="l">info</div></div>
+    <div class="stat confirmed"><div class="v">${byConfidence('confirmed')}</div><div class="l">confirmed</div></div>
+    <div class="stat probable"><div class="v">${byConfidence('probable')}</div><div class="l">probable</div></div>
+    <div class="stat inconclusive"><div class="v">${byConfidence('inconclusive')}</div><div class="l">inconclusive</div></div>
     ${cache}
   </section>
   <div class="controls">
-    <button data-filter="all" class="active">All</button>
-    <button data-filter="error">Errors</button>
-    <button data-filter="warning">Warnings</button>
-    <button data-filter="info">Info</button>
+    <button data-filter="all" data-kind="severity" class="active">All</button>
+    <button data-filter="error" data-kind="severity">Errors</button>
+    <button data-filter="warning" data-kind="severity">Warnings</button>
+    <button data-filter="info" data-kind="severity">Info</button>
+    <button data-filter="confirmed" data-kind="confidence">Confirmed</button>
+    <button data-filter="probable" data-kind="confidence">Probable</button>
+    <button data-filter="inconclusive" data-kind="confidence">Inconclusive</button>
     <input id="search" type="search" placeholder="Filter by message, URL, or type…" />
   </div>
   <main id="findings">
@@ -328,12 +384,14 @@ export function renderHtml(result: ScanResult): string {
   <script>
     const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
     let currentFilter = 'all';
+    let currentFilterKind = 'severity'; // 'severity' or 'confidence'
     let currentSearch = '';
     document.querySelectorAll('.controls button[data-filter]').forEach((btn) => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.controls button[data-filter]').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        currentFilter = btn.dataset.filter;
+        currentFilter = btn.dataset.filter || 'all';
+        currentFilterKind = btn.dataset.kind || 'severity';
         applyFilters();
       });
     });
@@ -346,7 +404,13 @@ export function renderHtml(result: ScanResult): string {
       cards.forEach((card) => {
         const sev = card.classList.contains('finding-error') ? 'error'
           : card.classList.contains('finding-warning') ? 'warning' : 'info';
-        const matchesFilter = currentFilter === 'all' || sev === currentFilter;
+        const conf = card.dataset.confidence || '';
+        let matchesFilter = true;
+        if (currentFilterKind === 'severity') {
+          matchesFilter = currentFilter === 'all' || sev === currentFilter;
+        } else {
+          matchesFilter = currentFilter === 'all' || conf === currentFilter;
+        }
         const text = (card.textContent || '').toLowerCase();
         const matchesSearch = !currentSearch || text.includes(currentSearch);
         card.classList.toggle('hide', !(matchesFilter && matchesSearch));

@@ -6,9 +6,16 @@ import type { CrawledPage, Finding } from '../types/index.js';
  * pages and emits findings for:
  *   - duplicate <title> across multiple pages
  *   - duplicate meta description
- *   - duplicate canonical URL across distinct page URLs
+ *   - shared canonical URL across distinct page URLs
  *
- * Run AFTER the main scan completes; pass the page array.
+ * Confidence: all findings here are PROBABLE. Duplicate titles and
+ * descriptions are a strong SEO signal of poor quality, but
+ * intentionally duplicated content (print views, tag pages) is valid.
+ * Treat the report as a starting point for editorial review, not a
+ * defect declaration.
+ *
+ * Note: SEO/accessibility findings here are scoped heuristics. We do NOT
+ * claim a full SEO audit.
  */
 
 export interface PageMeta {
@@ -34,17 +41,20 @@ export function detectDuplicates(pages: PageMeta[]): Finding[] {
   const byTitle = groupBy(pages.filter((p) => p.title), (p) => p.title);
   for (const [title, group] of byTitle) {
     if (group.length < 2) continue;
-    // Only flag if the URLs are distinct (same title on different pages).
-    const urls = new Set(group.map((p) => p.url));
-    if (urls.size < 2) continue;
+    const urls = [...new Set(group.map((p) => p.url))];
+    if (urls.length < 2) continue;
     out.push({
       id: `dup-title-${shortHash(title)}`,
       type: 'duplicate',
       severity: 'warning',
-      message: `Duplicate <title> across ${urls.size} pages: "${trunc(title)}"`,
-      page: [...urls].slice(0, 5).join(', ') + (urls.size > 5 ? ` …+${urls.size - 5}` : ''),
-      detail: { title, urls: [...urls] },
-      fix: 'Give each page a distinct <title>. Titles are a strong SEO and accessibility signal.',
+      confidence: 'probable',
+      message: `Duplicate <title> across ${urls.length} pages: "${trunc(title)}"`,
+      page: urls[0] ?? '',
+      affectedPages: urls,
+      detail: { title, urls, count: urls.length },
+      explanation:
+        'Search engines use titles to differentiate pages. Identical titles on distinct pages usually means low editorial quality or templating leakage.',
+      fix: 'Give each page a distinct <title>. Templates that emit static titles are often the root cause.',
     });
   }
 
@@ -52,32 +62,40 @@ export function detectDuplicates(pages: PageMeta[]): Finding[] {
   const byDesc = groupBy(pages.filter((p) => p.description), (p) => p.description);
   for (const [desc, group] of byDesc) {
     if (group.length < 2) continue;
-    const urls = new Set(group.map((p) => p.url));
-    if (urls.size < 2) continue;
+    const urls = [...new Set(group.map((p) => p.url))];
+    if (urls.length < 2) continue;
     out.push({
       id: `dup-desc-${shortHash(desc)}`,
       type: 'duplicate',
       severity: 'warning',
-      message: `Duplicate meta description across ${urls.size} pages`,
-      page: [...urls].slice(0, 5).join(', ') + (urls.size > 5 ? ` …+${urls.size - 5}` : ''),
-      detail: { urls: [...urls] },
-      fix: 'Each page should have a unique meta description.',
+      confidence: 'probable',
+      message: `Duplicate meta description across ${urls.length} pages`,
+      page: urls[0] ?? '',
+      affectedPages: urls,
+      detail: { urls, count: urls.length },
+      explanation:
+        'Distinct pages sharing one description undermines snippet quality and signals templating leakage.',
+      fix: 'Each page should have a unique meta description, ideally with the page-specific subject.',
     });
   }
 
-  // Multiple distinct pages pointing to the same canonical
+  // Shared canonical across distinct pages
   const byCanonical = groupBy(pages.filter((p) => p.canonical), (p) => p.canonical!);
   for (const [canonical, group] of byCanonical) {
-    const urls = new Set(group.map((p) => p.url));
-    if (urls.size < 2) continue;
+    const urls = [...new Set(group.map((p) => p.url))];
+    if (urls.length < 2) continue;
     out.push({
       id: `dup-canonical-${shortHash(canonical)}`,
       type: 'duplicate',
       severity: 'info',
-      message: `${urls.size} distinct pages share canonical="${canonical}"`,
-      page: [...urls].slice(0, 5).join(', ') + (urls.size > 5 ? ` …+${urls.size - 5}` : ''),
-      detail: { canonical, urls: [...urls] },
-      fix: 'Multiple pages with the same canonical tells search engines they are duplicates; pick one.',
+      confidence: 'probable',
+      message: `${urls.length} distinct pages share canonical="${canonical}"`,
+      page: urls[0] ?? '',
+      affectedPages: urls,
+      detail: { canonical, urls, count: urls.length },
+      explanation:
+        'When multiple distinct URLs declare the same canonical, search engines treat them as duplicates and pick one. This may be intentional (e.g. tag pages) but is often a templating bug.',
+      fix: 'Verify the duplicates are intentional. If not, give each page its own canonical (or set a 301 redirect to consolidate).',
     });
   }
 

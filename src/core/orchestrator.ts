@@ -146,20 +146,31 @@ export async function runScan(
       if ('error' in r) {
         pagesFailed++;
         errors.push(`${r.item.url}: ${r.msg}`);
-        const finding: Finding = {
+        const requestFailure: Finding = {
           id: `reqfail-${shortHash(r.item.url + r.error)}`,
           type: 'request_failed',
           severity: 'error',
+          confidence: r.error === 'TIMEOUT' || r.error === 'UNKNOWN' ? 'inconclusive' : 'confirmed',
           message: `Request failed (${r.error}): ${r.item.url}`,
           page: r.item.url,
           detail: { code: r.error },
+          explanation:
+            r.error === 'TIMEOUT'
+              ? 'The host did not respond within the scan timeout. May be transient.'
+              : r.error === 'REDIRECT_LOOP'
+                ? 'A redirect chain loops. Inspect Location headers along the chain.'
+                : r.error === 'PRIVATE_IP' || r.error === 'BLOCKED_HOSTNAME'
+                  ? 'The scanner refused to fetch this URL — it resolves to a private/loopback/blocked range (SSRF guard).'
+                  : 'The scanner could not complete this request.',
           fix: r.error === 'TIMEOUT'
             ? 'The host is slow or unreachable. Investigate or exclude this URL from scans.'
             : r.error === 'REDIRECT_LOOP'
               ? 'A redirect chain loops. Inspect Location headers along the chain.'
-              : 'Check that the host is reachable from the public internet.',
+              : r.error === 'PRIVATE_IP' || r.error === 'BLOCKED_HOSTNAME'
+                ? 'If the target is intentional, re-run with --allow-private and accept the risk.'
+                : 'Check that the host is reachable from the public internet.',
         };
-        findings.push(finding);
+        findings.push(requestFailure);
         progress?.emit({
           kind: 'page-failed',
           url: r.item.url,
@@ -293,13 +304,46 @@ async function scanOne(
   ];
 }
 
+/**
+ * Dedupe findings by id. When the same id fires multiple times (e.g. a
+ * broken image referenced from N pages, a duplicate-title finding whose
+ * id is per-title-value), accumulate the originating pages into
+ * `affectedPages` so the operator can see the full impact set in one
+ * finding instead of N duplicates.
+ */
 function dedupeFindings(findings: Finding[]): Finding[] {
-  const seen = new Set<string>();
-  const out: Finding[] = [];
+  const grouped = new Map<string, Finding[]>();
   for (const f of findings) {
-    if (seen.has(f.id)) continue;
-    seen.add(f.id);
-    out.push(f);
+    const list = grouped.get(f.id);
+    if (list) list.push(f);
+    else grouped.set(f.id, [f]);
+  }
+  const out: Finding[] = [];
+  for (const [, list] of grouped) {
+    const first = list[0];
+    if (!first) continue;
+    if (list.length === 1) {
+      out.push(first);
+      continue;
+    }
+    // Multiple occurrences: collect affected pages (deduped, order-stable).
+    const pageSet = new Set<string>();
+    const pages: string[] = [];
+    for (const f of list) {
+      if (!pageSet.has(f.page)) {
+        pageSet.add(f.page);
+        pages.push(f.page);
+      }
+    }
+    out.push({
+      ...first,
+      // If a scanner already set affectedPages (e.g. duplicates), keep the
+      // scanner's value when it has more entries than we collected from
+      // individual page records.
+      affectedPages: first.affectedPages && first.affectedPages.length >= pages.length
+        ? first.affectedPages
+        : pages,
+    });
   }
   return out;
 }

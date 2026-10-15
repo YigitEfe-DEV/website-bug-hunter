@@ -1,11 +1,16 @@
-import type { Finding } from '../types/index.js';
+import type { Confidence, Finding } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 /**
  * Headless browser scanners: JS errors and mobile responsiveness.
  * Playwright is an OPTIONAL dependency — if not installed, both scanners
- * report "skipped" as info-level findings (one per scan) so the operator
+ * report "skipped" as INCONCLUSIVE findings (one per scan) so the operator
  * knows the report is incomplete.
+ *
+ * Confidence semantics:
+ *   - console.error / pageerror / sub-resource 4xx     confirmed
+ *   - skipped (Playwright not installed)               inconclusive
+ *   - mobile render error                              inconclusive
  */
 export async function scanJsErrors(
   url: string,
@@ -30,8 +35,9 @@ export async function scanJsErrors(
     });
     page.on('pageerror', (err) => pageErrors.push(err.message));
     page.on('response', (res) => {
-      if (res.status() >= 400 && res.url().startsWith('http')) {
-        failedRequests.push({ url: res.url(), status: res.status() });
+      const s = res.status();
+      if (s >= 400 && res.url().startsWith('http')) {
+        failedRequests.push({ url: res.url(), status: s });
       }
     });
     try {
@@ -41,8 +47,12 @@ export async function scanJsErrors(
         id: `jserr-nav-${shortHash(url)}`,
         type: 'js_error',
         severity: 'error',
+        confidence: 'inconclusive',
         message: `Browser navigation failed: ${(e as Error).message}`,
         page: url,
+        explanation:
+          'Playwright could not complete the navigation within 30s; the page may be slow, blocked, or the browser crashed.',
+        fix: 'Retry with --timeout higher; if it persists, investigate the page manually.',
       });
     }
     for (const e of consoleErrors) {
@@ -50,8 +60,12 @@ export async function scanJsErrors(
         id: `jserr-c-${shortHash(url + e)}`,
         type: 'js_error',
         severity: 'error',
+        confidence: 'confirmed',
         message: `Console error: ${truncate(e)}`,
         page: url,
+        explanation:
+          'The page emitted a console.error. JavaScript errors break interactive features for users.',
+        fix: 'Open the page in DevTools, reproduce the error, and fix the offending code.',
       });
     }
     for (const e of pageErrors) {
@@ -59,18 +73,28 @@ export async function scanJsErrors(
         id: `jserr-p-${shortHash(url + e)}`,
         type: 'js_error',
         severity: 'error',
+        confidence: 'confirmed',
         message: `Page error: ${truncate(e)}`,
         page: url,
+        explanation:
+          'An uncaught JavaScript exception fired during page load or runtime.',
+        fix: 'Open the page in DevTools, reproduce the error, and fix the offending code.',
       });
     }
     for (const r of failedRequests) {
+      const sev = r.status !== null && r.status >= 500 ? 'inconclusive' : 'warning';
+      const conf: Confidence = r.status !== null && r.status >= 500 ? 'inconclusive' : 'confirmed';
       findings.push({
         id: `jserr-net-${shortHash(r.url + r.status)}`,
         type: 'link_broken',
-        severity: 'warning',
+        severity: sev,
+        confidence: conf,
         message: `Sub-resource HTTP ${r.status}: ${r.url}`,
         page: url,
         detail: { status: r.status },
+        explanation:
+          'A sub-resource (script, image, stylesheet, fetch, XHR) returned a non-2xx status. The page may render incorrectly as a result.',
+        fix: 'Verify the sub-resource exists and is reachable; fix or replace broken references.',
       });
     }
     await context.close();
@@ -124,9 +148,13 @@ export async function scanMobile(
             id: `mobile-${vp.name}-${shortHash(url)}`,
             type: 'mobile_overflow',
             severity: 'warning',
+            confidence: 'confirmed',
             message: `Horizontal overflow at ${vp.name} (${dims.scrollWidth}px > ${dims.clientWidth}px)`,
             page: url,
             detail: dims,
+            explanation:
+              'The page is wider than the viewport at this size — users will see a horizontal scrollbar and may miss content.',
+            fix: 'Inspect the page at this viewport. Common causes: fixed-width elements, large images, non-wrapping text, or off-canvas UI.',
           });
         }
       } catch (e) {
@@ -134,8 +162,12 @@ export async function scanMobile(
           id: `mobile-err-${vp.name}-${shortHash(url)}`,
           type: 'mobile_overflow',
           severity: 'warning',
+          confidence: 'inconclusive',
           message: `Mobile render failed at ${vp.name}: ${(e as Error).message}`,
           page: url,
+          explanation:
+            'Playwright could not render the page at this viewport within 30s; the mobile check could not be performed.',
+          fix: 'Retry; if it persists, the page may be too heavy or anti-bot blocking.',
         });
       }
       await context.close();
@@ -151,8 +183,11 @@ function skipped(url: string, type: 'js_error' | 'mobile_overflow', message: str
     id: `skip-${type}-${shortHash(url)}`,
     type,
     severity: 'info',
+    confidence: 'inconclusive',
     message,
     page: url,
+    explanation:
+      'The dynamic scanner could not run because Playwright is not installed. Install it (`npx playwright install chromium`) to enable JS-error and mobile checks.',
   };
 }
 

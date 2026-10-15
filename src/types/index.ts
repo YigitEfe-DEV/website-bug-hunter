@@ -26,6 +26,27 @@ export interface CrawledPage {
 
 export type Severity = 'error' | 'warning' | 'info';
 
+/**
+ * Confidence expresses how certain the scanner is that a finding reflects a
+ * real defect, not a heuristic guess or transient condition.
+ *
+ * - `confirmed`   The scanner observed the defect directly. Examples: the
+ *                 server returned 404, a redirect chain looped, two
+ *                 canonical links were emitted, the page HTML had no
+ *                 `<title>` tag.
+ * - `probable`    Heuristic evidence — the pattern usually indicates a
+ *                 problem but is not definitive. Examples: title shorter
+ *                 than recommended length, duplicate titles across pages,
+ *                 an `<img>` URL returning text/html (could be a CDN
+ *                 misconfiguration or an intentional placeholder).
+ * - `inconclusive` The scanner could not verify. Examples: request timed
+ *                 out, DNS resolver returned no usable answer, the host
+ *                 responded with a generic 5xx. The finding is reported so
+ *                 the operator can investigate; it is NOT a confirmed
+ *                 defect.
+ */
+export type Confidence = 'confirmed' | 'probable' | 'inconclusive';
+
 export type FindingType =
   | 'link_broken'
   | 'image_broken'
@@ -46,13 +67,31 @@ export interface Finding {
   id: string;
   type: FindingType;
   severity: Severity;
-  /** Short, human-readable message. */
+  /** Confidence the scanner holds in the finding — see Confidence. */
+  confidence: Confidence;
+  /** Short, human-readable message describing the observation. */
   message: string;
-  /** The page where the finding was observed. */
+  /**
+   * The affected page or resource. For findings tied to a single URL
+   * (e.g. a broken link), this is that URL. For findings observed on a
+   * crawled page (e.g. missing viewport), this is the page URL.
+   */
   page: string;
+  /**
+   * When the same resource-level finding was observed from multiple
+   * pages, all pages that referenced it are listed here. Absent when
+   * the finding pertains to a single page only.
+   */
+  affectedPages?: string[];
+  /**
+   * Brief explanation of WHY this matters — what the user-visible or
+   * SEO-impact is. Distinct from `message` (which states WHAT was
+   * observed) and `fix` (which says HOW to address it).
+   */
+  explanation?: string;
   /** Optional source location within the page (e.g., a URL or selector). */
   source?: string;
-  /** Optional raw diagnostic context (status code, MIME, etc.). */
+  /** Optional raw diagnostic context (status code, MIME, error code). */
   detail?: Record<string, unknown>;
   /** Optional actionable recommendation (code snippet or guidance). */
   fix?: string;

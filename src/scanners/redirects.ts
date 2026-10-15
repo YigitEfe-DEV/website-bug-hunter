@@ -1,11 +1,11 @@
 import type { CrawledPage, Finding } from '../types/index.js';
 
 /**
- * Detect redirect anomalies based on the status chain we recorded while
- * fetching the page. Findings:
- *   - redirect_loop:    the same URL appears twice in the chain
- *   - redirect_chain_long: more than 3 hops
- *   - redirect_downgrade: http -> https, or vice versa, across the chain
+ * Detect redirect anomalies from the status chain recorded during fetch.
+ *
+ * Confidence: all redirect findings are CONFIRMED — we observed the
+ * chain directly via the HTTP client; the redirect chain is not a
+ * heuristic.
  */
 export function scanRedirects(page: CrawledPage): Finding[] {
   const out: Finding[] = [];
@@ -22,10 +22,13 @@ export function scanRedirects(page: CrawledPage): Finding[] {
         id: `redir-loop-${shortHash(page.finalUrl)}`,
         type: 'redirect_loop',
         severity: 'error',
+        confidence: 'confirmed',
         message: `Redirect loop detected (${locs.length} hops)`,
         page: page.finalUrl,
         detail: { chain: locs },
-        fix: 'Inspect the redirect chain. Each Location must lead to a unique, terminating URL.',
+        explanation:
+          'A URL appeared twice in the redirect chain, so following it never terminates. Browsers will show "redirected too many times".',
+        fix: 'Inspect the Location headers along the chain. Each hop must lead to a unique URL that does not point back into the chain.',
       });
       break;
     }
@@ -38,10 +41,13 @@ export function scanRedirects(page: CrawledPage): Finding[] {
       id: `redir-long-${shortHash(page.finalUrl)}`,
       type: 'redirect_chain_long',
       severity: 'warning',
+      confidence: 'confirmed',
       message: `Long redirect chain (${locs.length} hops)`,
       page: page.finalUrl,
       detail: { chain: locs },
-      fix: 'Reduce the redirect chain to 1-2 hops. Each hop adds latency.',
+      explanation:
+        'Each redirect hop adds a round-trip. Long chains are usually unnecessary; aim for 1-2 hops.',
+      fix: 'Collapse intermediate hops into a single redirect, or update the source URL to point directly at the destination.',
     });
   }
 
@@ -54,19 +60,26 @@ export function scanRedirects(page: CrawledPage): Finding[] {
         id: `redir-upgrade-${shortHash(page.finalUrl)}`,
         type: 'redirect_downgrade',
         severity: 'info',
+        confidence: 'confirmed',
         message: 'http -> https upgrade',
         page: page.finalUrl,
         detail: { from: page.requestUrl, to: page.finalUrl },
+        explanation:
+          'The user-visible flow starts on http and ends on https. Acceptable, but the http origin should ideally 301 directly to https with HSTS.',
+        fix: 'Configure the http origin to 301 directly to the https destination and serve HSTS.',
       });
     } else if (first === 'https:' && last === 'http:') {
       out.push({
         id: `redir-downgrade-${shortHash(page.finalUrl)}`,
         type: 'redirect_downgrade',
         severity: 'error',
+        confidence: 'confirmed',
         message: 'https -> http downgrade (security regression)',
         page: page.finalUrl,
         detail: { from: page.requestUrl, to: page.finalUrl },
-        fix: 'Avoid https -> http redirects. They leak the referrer and break HSTS.',
+        explanation:
+          'The chain ends on http, defeating TLS for the destination. Referrer headers and any URL parameters are leaked in plaintext.',
+        fix: 'Do not redirect https -> http. Update the source link or configuration to point to the https version.',
       });
     }
   }
