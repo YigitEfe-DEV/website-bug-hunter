@@ -230,9 +230,21 @@ function sanitizeFinding(f: Finding): Finding | null {
   return f;
 }
 
-/** Strip ASCII control chars and limit length. */
+/**
+ * Strip ASCII control chars, U+2028/U+2029 (legitimate JavaScript line
+ * terminators that break out of `<script>...</script>` JSON blocks), and
+ * zero-width / bidi / bidi-mirror characters that could be used to spoof
+ * URLs or filenames in tooling that ingests the report. Length is capped
+ * at `max`.
+ */
 function sanitizeString(s: string, max: number): string {
-  const cleaned = s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  if (typeof s !== 'string') return '';
+  // eslint-disable-next-line no-control-regex
+  const cleaned = s
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '') // ASCII control (keep \t \n \r)
+    .replace(/[  ]/g, '') // U+2028 / U+2029 line terminators
+    .replace(/[‌‍﻿]/g, '') // U+200B..U+200D, U+2060, U+FEFF
+    .replace(/[‎‏‪-‮﻿]/g, ''); // U+202A..U+202E + U+2066..U+2069 bidi
   return cleaned.length > max ? cleaned.substring(0, max) : cleaned;
 }
 

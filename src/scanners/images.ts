@@ -16,6 +16,7 @@ export async function scanImages(
   page: CrawledPage,
   config: ScanConfig,
   cache: ProbeCache,
+  signal?: AbortSignal,
 ): Promise<{ findings: Finding[] }> {
   if (!page.isHtml) return { findings: [] };
   const $ = load(page.html, { xml: { decodeEntities: false } });
@@ -45,7 +46,7 @@ export async function scanImages(
 
   const findings: Finding[] = [];
   const records = await Promise.all(
-    Array.from(srcs).map((src) => probeImage(src, config, cache)),
+    Array.from(srcs).map((src) => probeImage(src, config, cache, signal)),
   );
   for (const r of records) {
     const f = findingFromRecord(r, page.finalUrl);
@@ -58,6 +59,7 @@ async function probeImage(
   src: string,
   config: ScanConfig,
   cache: ProbeCache,
+  signal?: AbortSignal,
 ): Promise<AssetRecord> {
   const cached = cache.getAsset(src);
   if (cached) return cached;
@@ -80,12 +82,21 @@ async function probeImage(
     cache.putAsset(src, r);
     return r;
   }
+  if (signal?.aborted) {
+    const r: AssetRecord = {
+      src, status: null, errorCode: 'CANCELLED', contentType: '', bytes: null,
+      probedAt: Date.now(),
+    };
+    cache.putAsset(src, r);
+    return r;
+  }
   try {
     const fetched = await fetchPage(src, {
       userAgent: config.userAgent,
       timeoutMs: config.timeoutMs,
       maxBytes: 256 * 1024,
       allowPrivate: config.allowPrivate,
+      signal,
     });
     const r: AssetRecord = {
       src,

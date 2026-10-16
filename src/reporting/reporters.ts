@@ -445,8 +445,12 @@ export function renderHtml(result: ScanResult): string {
   const types = [...new Set(findings.map((f) => f.type))].sort();
 
   // Pre-rendered script — embeds the report so the page is self-contained
-  // AND the filter/sort UI works without any network call.
-  const reportJson = JSON.stringify(result);
+  // AND the filter/sort UI works without any network call. The result
+  // has already been through `validateAndSanitize`, but defense in depth:
+// escape `</` to `<\/` so any literal "</script>" string inside a field
+// (e.g. a malicious URL in a finding) cannot break out of the surrounding
+// <script> tag. The browser tolerates `<\/` inside string literals.
+  const reportJson = JSON.stringify(result).replace(/<\//g, '<\\/');
 
   return `<!doctype html>
 <html lang="en">

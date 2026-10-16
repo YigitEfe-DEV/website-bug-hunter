@@ -1,4 +1,7 @@
 import { lookup } from 'dns/promises';
+import type { LookupAddress } from 'dns';
+import { Agent } from 'undici';
+import { assertSafeUrl } from './safeUrl.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -6,13 +9,34 @@ import { logger } from '../utils/logger.js';
  * "is this path allowed for our user-agent?" — no crawl-delay, no sitemaps.
  *
  * Spec: https://www.rfc-editor.org/rfc/rfc9309.html
+ *
+ * Security: the robots.txt fetch goes through the same gate as every
+ * other URL — `assertSafeUrl` validates the host, denies private/loopback
+ * ranges, and returns the IP we pin for the connection via an undici
+ * dispatcher. This closes the SSRF gap that a raw `fetch(robotsUrl)`
+ * call would leave open.
  */
+export interface RobotsOptions {
+  /** Allow private IP ranges (NEVER in production). */
+  allowPrivate?: boolean;
+  /** Cancellation signal from the orchestrator. */
+  signal?: AbortSignal;
+  /** Per-request timeout in ms. Default 5s. */
+  timeoutMs?: number;
+}
+
 export class RobotsCache {
   private cache = new Map<string, ParsedRobots | null>();
   private ua: string;
+  private allowPrivate: boolean;
+  private signal?: AbortSignal;
+  private timeoutMs: number;
 
-  constructor(userAgent: string) {
+  constructor(userAgent: string, options: RobotsOptions = {}) {
     this.ua = userAgent.toLowerCase();
+    this.allowPrivate = Boolean(options.allowPrivate);
+    if (options.signal) this.signal = options.signal;
+    this.timeoutMs = options.timeoutMs ?? 5000;
   }
 
   async isAllowed(url: string): Promise<boolean> {
@@ -33,25 +57,106 @@ export class RobotsCache {
     }
   }
 
+  /**
+   * Fetch the robots.txt body for a URL, validating the host through
+   * the same gate as every other network call. If validation fails
+   * (private IP, denied range, control-chars, etc.), we return null —
+   * which is treated as "no robots.txt" by `isAllowed` (i.e., allow).
+   */
   private async fetch(robotsUrl: string): Promise<ParsedRobots | null> {
+    let safe;
     try {
-      const u = new URL(robotsUrl);
-      // Verify the host resolves to a public IP.
-      await lookup(u.hostname);
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 5000);
-      const res = await fetch(robotsUrl, {
-        signal: ac.signal,
-        headers: { 'User-Agent': this.ua },
+      safe = await assertSafeUrl(robotsUrl, { allowPrivate: this.allowPrivate });
+    } catch (e) {
+      logger.debug(
+        { url: robotsUrl, code: (e as { code?: string }).code ?? 'UNSAFE' },
+        'refusing robots fetch: blocked by safe url gate',
+      );
+      return null;
+    }
+
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+    const onAbort = () => ac.abort();
+    if (this.signal) {
+      if (this.signal.aborted) ac.abort();
+      else this.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    try {
+      const isHttps = safe.url.protocol === 'https:';
+      const port = safe.url.port
+        ? Number(safe.url.port)
+        : isHttps
+          ? 443
+          : 80;
+      const dispatcher = new Agent({
+        connect: {
+          host: safe.ip,
+          port,
+          servername: isHttps ? safe.url.hostname : undefined,
+        },
+        bodyTimeout: 0,
+        headersTimeout: 0,
       });
-      clearTimeout(timer);
+      // Best-effort precheck that the host still resolves publicly.
+      // assertSafeUrl already pinned the IP, but a re-lookup catches
+      // the rare case where DNS was previously healthy and is now
+      // returning bogus answers on a second resolve.
+      try {
+        const recheck: LookupAddress[] = await lookup(safe.url.hostname, {
+          all: true,
+          verbatim: true,
+        });
+        for (const a of recheck) {
+          if (a.family === 4 && isPrivateV4(a.address)) return null;
+        }
+      } catch {
+        return null;
+      }
+      const res = await fetch(safe.url.toString(), {
+        method: 'GET',
+        signal: ac.signal,
+        dispatcher,
+        headers: { 'User-Agent': this.ua, Accept: 'text/plain,*/*;q=0.5' },
+      });
       if (!res.ok) return null;
       const text = await res.text();
       return parseRobots(text);
-    } catch {
+    } catch (e) {
+      logger.debug(
+        { url: robotsUrl, err: (e as Error).message },
+        'robots fetch errored',
+      );
       return null;
+    } finally {
+      clearTimeout(timer);
+      if (this.signal) this.signal.removeEventListener('abort', onAbort);
     }
   }
+}
+
+/**
+ * Tiny IP-range check used only for the connection-time re-validation
+ * in `RobotsCache.fetch`. Mirrors the broader deny-lists in
+ * `safeUrl.ts` for IPv4 only. IPv6 ranges are intentionally not
+ * re-checked here — `assertSafeUrl` already gated them upstream; a
+ * double-check would cost an extra lookup.
+ */
+function isPrivateV4(addr: string): boolean {
+  const parts = addr.split('.');
+  if (parts.length !== 4) return false;
+  const v = parts.map((p) => Number(p));
+  if (v.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  // 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16, 100.64/10
+  if (v[0] === 10) return true;
+  if (v[0] === 127) return true;
+  if (v[0] === 169 && v[1] === 254) return true;
+  if (v[0] === 172 && v[1] >= 16 && v[1] <= 31) return true;
+  if (v[0] === 192 && v[1] === 168) return true;
+  if (v[0] === 100 && v[1] >= 64 && v[1] <= 127) return true;
+  if (v[0] === 0) return true;
+  return false;
 }
 
 interface ParsedRobots {
@@ -74,9 +179,7 @@ function parseRobots(text: string): ParsedRobots {
     const key = line.substring(0, idx).trim().toLowerCase();
     const value = line.substring(idx + 1).trim();
     if (key === 'user-agent') {
-      // Start a new group.
       const ua = value.toLowerCase();
-      // If a group already exists for this exact UA, extend it; otherwise new.
       const existing = rules.find((r) => r.ua.length === 1 && r.ua[0] === ua);
       if (existing) {
         cur = existing;
@@ -93,8 +196,6 @@ function parseRobots(text: string): ParsedRobots {
 
   return {
     isDisallowed(path: string, ua: string): boolean {
-      // Find the longest matching rule for the most specific UA group.
-      // Per spec, the most specific group wins (longest UA match).
       const candidates = rules.filter((r) => r.ua.includes(ua) || r.ua.includes('*'));
       let best: { rule: Rule; len: number; allow: boolean } | null = null;
       for (const r of candidates) {

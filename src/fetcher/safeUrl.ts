@@ -52,9 +52,21 @@ const BLOCKED_V4_CIDRS: ReadonlyArray<readonly [number, number]> = [
   [0xe0000000, 0xefffffff],
   // [240.0.0.0/4]  (reserved/broadcast)
   [0xf0000000, 0xffffffff],
+  // [255.255.255.255/32]  (broadcast — explicit to be safe)
+  [0xffffffff, 0xffffffff],
 ];
 
-/** Blocked IPv6 prefixes. */
+/**
+ * Blocked IPv6 prefixes.
+ *
+ * IPv4-mapped blocks (`::ffff:x.x.x.x`) and NAT64 (`64:ff9b::/96`) route
+ * to an IPv4 destination; the v4 deny-list is consulted for these cases.
+ * 6to4 (`2002::/16`) and Teredo (`2001::/32`) also collapse to an IPv4
+ * destination at the routing layer; we deny both to avoid tunnels
+ * bypassing the v4 gate. The deprecated IPv4-compatible form
+ * (`::a.b.c.d`) is fully denied via `::/96` because no legitimate
+ * current traffic uses it.
+ */
 const BLOCKED_V6_PREFIXES: ReadonlyArray<readonly [number, number, number] | string> = [
   '::1/128', // loopback
   'fc00::/7', // ULA
@@ -64,10 +76,14 @@ const BLOCKED_V6_PREFIXES: ReadonlyArray<readonly [number, number, number] | str
   '::ffff:172.16.0.0/108',
   '::ffff:192.168.0.0/112',
   '::ffff:169.254.0.0/112',
-  '64:ff9b::/96', // NAT64
+  '64:ff9b::/96', // NAT64 well-known prefix
+  '64:ff9b:1::/48', // local-network NAT64
   '100::/64', // discard
+  '2001::/32', // Teredo tunneling
+  '2002::/16', // 6to4 (encapsulates IPv4; collapse considered part of v4 gate)
   '2001:db8::/32', // documentation
   '::/128', // unspecified
+  '::/96', // IPv4-compatible (deprecated but parsers still accept it)
 ];
 
 const BLOCKED_HOSTNAMES = new Set([
@@ -252,6 +268,17 @@ export async function assertSafeUrl(
     throw new UnsafeUrlError(
       'BAD_SCHEME',
       `Refusing non-http(s) scheme: ${parsed.protocol}`,
+      rawUrl,
+    );
+  }
+
+  // Reject URLs that carry userinfo (user:password@host). WHATWG URL
+  // preserves it in toString(), which leaks credentials into logs and
+  // cache keys. The scanner has no use for it.
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new UnsafeUrlError(
+      'USERINFO',
+      `Refusing URL with embedded credentials (userinfo)`,
       rawUrl,
     );
   }

@@ -19,6 +19,7 @@ interface CliOptions {
   maxPages?: string;
   maxDepth?: string;
   maxTime?: string;
+  maxRequests?: string;
   concurrency?: string;
   rate?: string;
   userAgent?: string;
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
     .option('--max-pages <n>', 'Max pages to scan', '500')
     .option('--max-depth <n>', 'Max link depth', '5')
     .option('--max-time <ms>', 'Max total time in ms', '600000')
+    .option('--max-requests <n>', 'Global cap on outbound requests (HTML + redirects + probes)', '5000')
     .option('--concurrency <n>', 'Parallel fetches', '4')
     .option('--rate <ms>', 'Per-request delay in ms', '0')
     .option('--user-agent <ua>', 'User-Agent string')
@@ -78,6 +80,7 @@ async function main(): Promise<void> {
             maxPages: parseInt(opts.maxPages ?? '500', 10),
             maxDepth: parseInt(opts.maxDepth ?? '5', 10),
             maxTimeMs: parseInt(opts.maxTime ?? '600000', 10),
+            maxRequests: parseInt(opts.maxRequests ?? '5000', 10),
             concurrency: parseInt(opts.concurrency ?? '4', 10),
             rateMs: parseInt(opts.rate ?? '0', 10),
             ...(opts.userAgent ? { userAgent: opts.userAgent } : {}),
@@ -127,6 +130,13 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  logger.fatal({ err: (e as Error).message, stack: (e as Error).stack }, 'fatal');
+  // Fatal path: log only a redacted name+message, not the stack. Stacks
+  // can include filesystem paths and module loaders that leak operational
+  // detail not relevant to the operator.
+  const err = e as Error;
+  logger.fatal(
+    { name: err.name, err: err.message?.substring(0, 240) ?? 'unknown' },
+    'fatal',
+  );
   process.exit(2);
 });

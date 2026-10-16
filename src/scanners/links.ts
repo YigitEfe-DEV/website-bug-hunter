@@ -24,6 +24,7 @@ export async function scanLinks(
   page: CrawledPage,
   config: ScanConfig,
   cache: ProbeCache,
+  signal?: AbortSignal,
 ): Promise<{ findings: Finding[]; sameOriginLinks: string[]; records: LinkRecord[] }> {
   if (!page.isHtml) return { findings: [], sameOriginLinks: [], records: [] };
   const $ = load(page.html, { xml: { decodeEntities: false } });
@@ -42,7 +43,9 @@ export async function scanLinks(
     targets.push(abs);
   });
 
-  const records = await Promise.all(targets.map((href) => probe(href, page.finalUrl, config, cache)));
+  const records = await Promise.all(
+    targets.map((href) => probe(href, page.finalUrl, config, cache, signal)),
+  );
   const sameOriginLinks: string[] = [];
   for (const r of records) {
     if (r.sameOrigin && r.status !== null && r.status < 400) sameOriginLinks.push(r.finalUrl);
@@ -59,6 +62,7 @@ async function probe(
   parentUrl: string,
   config: ScanConfig,
   cache: ProbeCache,
+  signal?: AbortSignal,
 ): Promise<LinkRecord> {
   // Cache hit
   const cached = cache.getLink(href);
@@ -93,12 +97,26 @@ async function probe(
     return r;
   }
 
+  if (signal?.aborted) {
+    const r: LinkRecord = {
+      href,
+      finalUrl: href,
+      status: null,
+      errorCode: 'CANCELLED',
+      sameOrigin: sameOrigin(href, parentUrl),
+      probedAt: Date.now(),
+    };
+    cache.putLink(href, r);
+    return r;
+  }
+
   try {
     const fetched = await fetchPage(href, {
       userAgent: config.userAgent,
       timeoutMs: config.timeoutMs,
       maxBytes: config.maxBytesPerPage,
       allowPrivate: config.allowPrivate,
+      signal,
     });
     const r: LinkRecord = {
       href,

@@ -1,5 +1,6 @@
 import type { Confidence, Finding } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { sameOrigin } from '../utils/url.js';
 
 /**
  * Headless browser scanners: JS errors and mobile responsiveness.
@@ -7,11 +8,51 @@ import { logger } from '../utils/logger.js';
  * report "skipped" as INCONCLUSIVE findings (one per scan) so the operator
  * knows the report is incomplete.
  *
+ * Security hardening (R3, R4):
+ *   - Chromium is launched headless with the OS sandbox on; we never
+ *     pass `--no-sandbox`.
+ *   - The browser launch itself has a 30s timeout so a hung Chromium
+ *     does not stall the whole scan.
+ *   - A `page.route()` handler aborts any navigation/sub-resource
+ *     request whose host differs from the scan target's origin. This
+ *     prevents remote HTML from making arbitrary calls into the user's
+ *     network (e.g. SSRF via JS-issued fetches, file:// probes, etc.).
+ *   - Page-level navigation is capped at 30s with `setDefaultNavigationTimeout`.
+ *
  * Confidence semantics:
  *   - console.error / pageerror / sub-resource 4xx     confirmed
  *   - skipped (Playwright not installed)               inconclusive
  *   - mobile render error                              inconclusive
  */
+const BROWSER_LAUNCH_TIMEOUT_MS = 30_000;
+const PAGE_NAVIGATION_TIMEOUT_MS = 30_000;
+
+/**
+ * Install a route guard on the page. Any request whose URL is not
+ * same-origin to the target URL is aborted. This is defense in depth
+ * against pages that load third-party scripts which attempt to fetch
+ * from internal hosts.
+ */
+async function installRouteGuard(
+  page: import('playwright').Page,
+  targetUrl: string,
+): Promise<void> {
+  await page.route('**/*', (route) => {
+    try {
+      const reqUrl = route.request().url();
+      if (!reqUrl.startsWith('http')) {
+        return route.abort();
+      }
+      if (!sameOrigin(reqUrl, targetUrl)) {
+        return route.abort();
+      }
+      return route.continue();
+    } catch {
+      return route.abort();
+    }
+  });
+}
+
 export async function scanJsErrors(
   url: string,
   userAgent: string,
@@ -22,11 +63,17 @@ export async function scanJsErrors(
   } catch {
     return [skipped(url, 'js_error', 'playwright not installed; JS error scan skipped')];
   }
-  const browser = await playwright.chromium.launch({ headless: true });
+  const browser = await playwright.chromium.launch({
+    headless: true,
+    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
+  });
   const findings: Finding[] = [];
   try {
     const context = await browser.newContext({ userAgent, javaScriptEnabled: true });
+    context.setDefaultNavigationTimeout(PAGE_NAVIGATION_TIMEOUT_MS);
+    context.setDefaultTimeout(PAGE_NAVIGATION_TIMEOUT_MS);
     const page = await context.newPage();
+    await installRouteGuard(page, url);
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
     const failedRequests: { url: string; status: number | null }[] = [];
@@ -41,14 +88,17 @@ export async function scanJsErrors(
       }
     });
     try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+      await page.goto(url, {
+        waitUntil: 'networkidle',
+        timeout: PAGE_NAVIGATION_TIMEOUT_MS,
+      });
     } catch (e) {
       findings.push({
         id: `jserr-nav-${shortHash(url)}`,
         type: 'js_error',
         severity: 'error',
         confidence: 'inconclusive',
-        message: `Browser navigation failed: ${(e as Error).message}`,
+        message: `Browser navigation failed: ${truncate((e as Error).message)}`,
         page: url,
         explanation:
           'Playwright could not complete the navigation within 30s; the page may be slow, blocked, or the browser crashed.',
@@ -127,7 +177,10 @@ export async function scanMobile(
   } catch {
     return [skipped(url, 'mobile_overflow', 'playwright not installed; mobile scan skipped')];
   }
-  const browser = await playwright.chromium.launch({ headless: true });
+  const browser = await playwright.chromium.launch({
+    headless: true,
+    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
+  });
   const findings: Finding[] = [];
   try {
     for (const vp of MOBILE_VIEWPORTS) {
@@ -135,9 +188,15 @@ export async function scanMobile(
         viewport: { width: vp.width, height: vp.height },
         userAgent,
       });
+      context.setDefaultNavigationTimeout(PAGE_NAVIGATION_TIMEOUT_MS);
+      context.setDefaultTimeout(PAGE_NAVIGATION_TIMEOUT_MS);
       const page = await context.newPage();
+      await installRouteGuard(page, url);
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: PAGE_NAVIGATION_TIMEOUT_MS,
+        });
         const dims = await page.evaluate(() => ({
           scrollWidth: document.documentElement.scrollWidth,
           clientWidth: document.documentElement.clientWidth,
@@ -163,7 +222,7 @@ export async function scanMobile(
           type: 'mobile_overflow',
           severity: 'warning',
           confidence: 'inconclusive',
-          message: `Mobile render failed at ${vp.name}: ${(e as Error).message}`,
+          message: `Mobile render failed at ${vp.name}: ${truncate((e as Error).message)}`,
           page: url,
           explanation:
             'Playwright could not render the page at this viewport within 30s; the mobile check could not be performed.',
@@ -192,6 +251,7 @@ function skipped(url: string, type: 'js_error' | 'mobile_overflow', message: str
 }
 
 function truncate(s: string, n = 240): string {
+  if (typeof s !== 'string') return '';
   return s.length > n ? s.substring(0, n) + '…' : s;
 }
 

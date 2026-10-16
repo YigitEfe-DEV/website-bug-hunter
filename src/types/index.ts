@@ -106,6 +106,13 @@ export interface ScanConfig {
   maxDepth: number;
   /** Max time in ms (default 10 min). */
   maxTimeMs: number;
+  /**
+   * Global cap on outbound requests made during the scan (HTML page
+   * fetches, redirect hops, link probes, asset probes, robots fetches).
+   * Default 5000. Combined with `maxPages`, this prevents sitemap-bomb
+   * inputs from generating millions of probes.
+   */
+  maxRequests: number;
   /** Max bytes per response (default 2 MB). */
   maxBytesPerPage: number;
   /** Concurrency for HTTP fetches (default 4). */
@@ -127,6 +134,7 @@ export const DEFAULT_SCAN_CONFIG: ScanConfig = {
   maxPages: 500,
   maxDepth: 5,
   maxTimeMs: 10 * 60 * 1000,
+  maxRequests: 5000,
   maxBytesPerPage: 2 * 1024 * 1024,
   concurrency: 4,
   rateMs: 0,

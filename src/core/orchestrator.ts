@@ -33,10 +33,12 @@ export interface RunScanOptions {
  *
  * Security:
  *   - Every URL passes through httpClient (which calls assertSafeUrl
- *     on each redirect hop).
+ *     on each redirect hop, AND pins the IP for the connection).
  *   - Cross-origin links are NOT enqueued for full page scanning.
  *   - The same-origin target is locked at scan start from input.target,
  *     not from the page URL — so a redirect-in-page cannot widen scope.
+ *   - A global request counter caps the total outbound HTTP calls
+ *     regardless of how many fragments the site expands into.
  */
 export async function runScan(
   input: ScanInput,
@@ -50,18 +52,33 @@ export async function runScan(
   const visited = new Set<string>();
   const frontier: { url: string; depth: number }[] = [];
   const limit = pLimit(config.concurrency);
-  const robots = new RobotsCache(config.userAgent);
+  // Internal abort signal so we can cancel half-finished work when a
+  // budget is reached. Sourced from the caller's signal when present.
+  // The listener is detached in `cleanup` so a normal completion does
+  // not leak an EventTarget reference to the caller's signal.
+  const internalSignal = new AbortController();
+  const cleanup = () => {
+    if (signal) signal.removeEventListener('abort', abortForwarder);
+  };
+  const abortForwarder = () => internalSignal.abort();
+  if (signal) {
+    if (signal.aborted) internalSignal.abort();
+    else signal.addEventListener('abort', abortForwarder, { once: true });
+  }
+  const robots = new RobotsCache(config.userAgent, {
+    allowPrivate: config.allowPrivate,
+    signal: internalSignal.signal,
+  });
   const cache = options.cache ?? new ProbeCache();
   const progress = options.progress;
   const crawledPages: CrawledPage[] = [];
   let pagesScanned = 0;
   let pagesFailed = 0;
   let pagesSkipped = 0;
+  let requestsMade = 0;
   let budgetExhausted = false;
+  const MAX_ERRORS = 200;
 
-  // Lock the target origin from the *original* input target, not the
-  // final URL after redirects. This prevents a redirect chain from
-  // widening the scan scope.
   const originTarget = input.target;
 
   const initial = normalizeUrl(input.target, input.target);
@@ -78,17 +95,22 @@ export async function runScan(
       errors: ['target is not a valid http(s) URL'],
       budgetExhausted: false,
     };
+    cleanup();
     return validateAndSanitize(result);
   }
   progress?.emit({ kind: 'started', target: input.target, maxPages: config.maxPages, maxDepth: config.maxDepth });
   frontier.push({ url: initial, depth: 0 });
 
   while (frontier.length > 0) {
-    if (signal?.aborted) {
+    if (internalSignal.signal.aborted) {
       budgetExhausted = true;
       break;
     }
     if (pagesScanned >= config.maxPages) {
+      budgetExhausted = true;
+      break;
+    }
+    if (requestsMade >= config.maxRequests) {
       budgetExhausted = true;
       break;
     }
@@ -110,8 +132,26 @@ export async function runScan(
     const results = await Promise.all(
       batch.map((item) =>
         limit(async () => {
+          if (internalSignal.signal.aborted) {
+            return { skipped: true, item } as const;
+          }
+          // Account for the robots fetch — it happens even when we end up
+          // skipping the page itself.
+          requestsMade++;
+          if (requestsMade >= config.maxRequests) {
+            internalSignal.abort();
+            return { skipped: true, item } as const;
+          }
           if (!(await robots.isAllowed(item.url))) {
             pagesSkipped++;
+            return { skipped: true, item } as const;
+          }
+          // Charge 1 budget unit for the main page fetch (the initial
+          // `requestsMade++` above covers the robots attempt). The page
+          // fetch itself may include redirects; account for those below.
+          requestsMade++;
+          if (requestsMade >= config.maxRequests) {
+            internalSignal.abort();
             return { skipped: true, item } as const;
           }
           progress?.emit({ kind: 'page-fetching', url: item.url });
@@ -121,7 +161,11 @@ export async function runScan(
               timeoutMs: config.timeoutMs,
               maxBytes: config.maxBytesPerPage,
               allowPrivate: config.allowPrivate,
+              signal: internalSignal.signal,
             });
+            // fetchPage cost 1 request + N redirect hops; the main
+            // request was charged above, just add the rest.
+            requestsMade += page.locationChain.length;
             if (page.locationChain.length > 0) {
               progress?.emit({ kind: 'redirect-chain', url: item.url, hops: page.locationChain.length });
             }
@@ -131,7 +175,7 @@ export async function runScan(
             return {
               error: code,
               item,
-              msg: (e as Error).message,
+              msg: redactErrorMessage((e as Error).message),
             } as const;
           }
         }),
@@ -145,13 +189,14 @@ export async function runScan(
       }
       if ('error' in r) {
         pagesFailed++;
-        errors.push(`${r.item.url}: ${r.msg}`);
+        const errMsg = `${truncate(r.item.url, 2048)}: ${r.msg}`;
+        if (errors.length < MAX_ERRORS) errors.push(errMsg);
         const requestFailure: Finding = {
           id: `reqfail-${shortHash(r.item.url + r.error)}`,
           type: 'request_failed',
           severity: 'error',
           confidence: r.error === 'TIMEOUT' || r.error === 'UNKNOWN' ? 'inconclusive' : 'confirmed',
-          message: `Request failed (${r.error}): ${r.item.url}`,
+          message: `Request failed (${r.error}): ${truncate(r.item.url, 2048)}`,
           page: r.item.url,
           detail: { code: r.error },
           explanation:
@@ -184,7 +229,7 @@ export async function runScan(
       pagesScanned++;
       const page: CrawledPage = r.page;
       crawledPages.push(page);
-      const staticFindings = await scanOne(page, config, cache);
+      const staticFindings = await scanOne(page, config, cache, internalSignal.signal);
       for (const f of staticFindings) {
         findings.push(f);
         progress?.emit({ kind: 'finding', type: f.type, severity: f.severity, message: f.message });
@@ -199,7 +244,6 @@ export async function runScan(
         queueSize: frontier.length,
       });
 
-      // Discover more links (if HTML and within depth budget).
       if (page.isHtml && r.item.depth < config.maxDepth) {
         const $ = load(page.html, { xml: { decodeEntities: false } });
         $('a[href]').each((_, el) => {
@@ -209,9 +253,6 @@ export async function runScan(
           const abs = normalizeUrl(href, page.finalUrl);
           if (!abs) return;
           if (visited.has(abs)) return;
-          // Same-origin enforcement: locked to the input target's origin,
-          // not the page's post-redirect URL. This prevents redirect chains
-          // from widening the scan scope.
           if (!sameOrigin(abs, originTarget)) return;
           frontier.push({ url: abs, depth: r.item.depth + 1 });
         });
@@ -223,7 +264,6 @@ export async function runScan(
     }
   }
 
-  // Cross-page duplicate detection (titles, descriptions, canonicals).
   const pageMetas = crawledPages
     .map(extractMeta)
     .filter((m): m is NonNullable<typeof m> => m !== null);
@@ -233,15 +273,13 @@ export async function runScan(
     progress?.emit({ kind: 'finding', type: f.type, severity: f.severity, message: f.message });
   }
 
-  // Dynamic scanners (Playwright). Run once on the target root.
-  // Wrap so a crash in one doesn't take down the other.
   const [jsErrors, mobile] = await Promise.all([
     scanJsErrors(initial, config.userAgent).catch((e) => {
-      logger.error({ err: (e as Error).message }, 'js error scanner crashed');
+      logger.error({ err: redactErrorMessage((e as Error).message) }, 'js error scanner crashed');
       return [];
     }),
     scanMobile(initial, config.userAgent).catch((e) => {
-      logger.error({ err: (e as Error).message }, 'mobile scanner crashed');
+      logger.error({ err: redactErrorMessage((e as Error).message) }, 'mobile scanner crashed');
       return [];
     }),
   ]);
@@ -282,6 +320,10 @@ export async function runScan(
     durationMs: finishedAt - startedAt,
   });
 
+  // Always detach our listener from the caller's signal so we don't
+  // hold a long-lived reference into the user's AbortSignal.
+  cleanup();
+
   return validateAndSanitize(result);
 }
 
@@ -289,14 +331,15 @@ async function scanOne(
   page: CrawledPage,
   config: ScanConfig,
   cache: ProbeCache,
+  signal?: AbortSignal,
 ): Promise<Finding[]> {
   const [linkRes, imageRes, metaRes, redirectRes, a11yRes] = await Promise.all([
-    scanLinks(page, config, cache).catch((e) => {
-      logger.error({ err: (e as Error).message, page: page.finalUrl }, 'link scanner crashed');
+    scanLinks(page, config, cache, signal).catch((e) => {
+      logger.error({ err: redactErrorMessage((e as Error).message), page: page.finalUrl }, 'link scanner crashed');
       return { findings: [], sameOriginLinks: [], records: [] };
     }),
-    scanImages(page, config, cache).catch((e) => {
-      logger.error({ err: (e as Error).message, page: page.finalUrl }, 'image scanner crashed');
+    scanImages(page, config, cache, signal).catch((e) => {
+      logger.error({ err: redactErrorMessage((e as Error).message), page: page.finalUrl }, 'image scanner crashed');
       return { findings: [] };
     }),
     Promise.resolve(scanMeta(page)),
@@ -334,7 +377,6 @@ function dedupeFindings(findings: Finding[]): Finding[] {
       out.push(first);
       continue;
     }
-    // Multiple occurrences: collect affected pages (deduped, order-stable).
     const pageSet = new Set<string>();
     const pages: string[] = [];
     for (const f of list) {
@@ -345,9 +387,6 @@ function dedupeFindings(findings: Finding[]): Finding[] {
     }
     out.push({
       ...first,
-      // If a scanner already set affectedPages (e.g. duplicates), keep the
-      // scanner's value when it has more entries than we collected from
-      // individual page records.
       affectedPages: first.affectedPages && first.affectedPages.length >= pages.length
         ? first.affectedPages
         : pages,
@@ -360,4 +399,30 @@ function shortHash(s: string): string {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(36);
+}
+
+/** Cap arbitrary strings (URLs, error messages) before they enter a report. */
+function truncate(s: string, max: number): string {
+  if (typeof s !== 'string') return '';
+  return s.length > max ? s.substring(0, max) + '…' : s;
+}
+
+/**
+ * Reduce an error message to its safe prefix. Real error strings can
+ * include DNS detail that names internal resolvers, server paths, or
+ * stack-trace fragments. We strip control characters, drop anything
+ * that looks like a file path with line/column numbers, and cap the
+ * length. The `code` field is the operator-facing classification; this
+ * keeps `message` short and honest.
+ */
+function redactErrorMessage(msg: string): string {
+  if (typeof msg !== 'string') return '';
+  let s = msg
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/[  ]/g, '');
+  // Strip "    at func (file.js:123:45)" stack frames.
+  s = s.replace(/\s+at\s+.+?\(.*?:\d+:\d+\)/g, '');
+  if (s.length > 240) s = s.substring(0, 240) + '…';
+  return s;
 }
