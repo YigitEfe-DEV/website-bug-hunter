@@ -1,4 +1,4 @@
-import { load } from 'cheerio';
+import { load, type CheerioAPI } from 'cheerio';
 import { assertSafeUrl, UnsafeUrlError } from '../fetcher/safeUrl.js';
 import { fetchPage, FetchError } from '../fetcher/httpClient.js';
 import { normalizeUrl, sameOrigin } from '../utils/url.js';
@@ -25,9 +25,16 @@ export async function scanLinks(
   config: ScanConfig,
   cache: ProbeCache,
   signal?: AbortSignal,
+  /**
+   * Pre-parsed cheerio root for the page. Reusing one parse across the
+   * scanner fan-out cuts the work per crawled page from N parses down to
+   * 1. Callers that don't have a preloaded instance (unit tests, ad-hoc
+   * callers) get the original on-demand load.
+   */
+  preloadedCheerio?: CheerioAPI | null,
 ): Promise<{ findings: Finding[]; sameOriginLinks: string[]; records: LinkRecord[] }> {
   if (!page.isHtml) return { findings: [], sameOriginLinks: [], records: [] };
-  const $ = load(page.html, { xml: { decodeEntities: false } });
+  const $ = preloadedCheerio ?? load(page.html, { xml: { decodeEntities: false } });
   const findings: Finding[] = [];
   const seen = new Set<string>();
   const targets: string[] = [];

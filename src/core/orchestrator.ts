@@ -1,4 +1,4 @@
-import { load } from 'cheerio';
+import { load, type CheerioAPI } from 'cheerio';
 import pLimit from 'p-limit';
 import { fetchPage, FetchError } from '../fetcher/httpClient.js';
 import { RobotsCache } from '../fetcher/robots.js';
@@ -229,7 +229,14 @@ export async function runScan(
       pagesScanned++;
       const page: CrawledPage = r.page;
       crawledPages.push(page);
-      const staticFindings = await scanOne(page, config, cache, internalSignal.signal);
+      // Parse the page HTML once per crawl. Every static scanner that
+      // needs cheerio (link extraction, image probing rules, meta check,
+      // accessibility) reuses this same parsed tree instead of re-parsing
+      // the same HTML N times. ~5x reduction in cheerio work per page.
+      const $: CheerioAPI | null = page.isHtml
+        ? load(page.html, { xml: { decodeEntities: false } })
+        : null;
+      const staticFindings = await scanOne(page, config, cache, internalSignal.signal, $);
       for (const f of staticFindings) {
         findings.push(f);
         progress?.emit({ kind: 'finding', type: f.type, severity: f.severity, message: f.message });
@@ -244,8 +251,7 @@ export async function runScan(
         queueSize: frontier.length,
       });
 
-      if (page.isHtml && r.item.depth < config.maxDepth) {
-        const $ = load(page.html, { xml: { decodeEntities: false } });
+      if ($ && r.item.depth < config.maxDepth) {
         $('a[href]').each((_, el) => {
           const href = $(el).attr('href');
           if (!href) return;
@@ -332,19 +338,20 @@ async function scanOne(
   config: ScanConfig,
   cache: ProbeCache,
   signal?: AbortSignal,
+  preloadedCheerio?: CheerioAPI | null,
 ): Promise<Finding[]> {
   const [linkRes, imageRes, metaRes, redirectRes, a11yRes] = await Promise.all([
-    scanLinks(page, config, cache, signal).catch((e) => {
+    scanLinks(page, config, cache, signal, preloadedCheerio).catch((e) => {
       logger.error({ err: redactErrorMessage((e as Error).message), page: page.finalUrl }, 'link scanner crashed');
       return { findings: [], sameOriginLinks: [], records: [] };
     }),
-    scanImages(page, config, cache, signal).catch((e) => {
+    scanImages(page, config, cache, signal, preloadedCheerio).catch((e) => {
       logger.error({ err: redactErrorMessage((e as Error).message), page: page.finalUrl }, 'image scanner crashed');
       return { findings: [] };
     }),
-    Promise.resolve(scanMeta(page)),
+    Promise.resolve(scanMeta(page, preloadedCheerio)),
     Promise.resolve(scanRedirects(page)),
-    Promise.resolve(scanAccessibility(page)),
+    Promise.resolve(scanAccessibility(page, preloadedCheerio)),
   ]);
   return [
     ...linkRes.findings,

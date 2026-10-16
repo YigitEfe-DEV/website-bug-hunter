@@ -1,4 +1,4 @@
-import { load } from 'cheerio';
+import { load, type CheerioAPI } from 'cheerio';
 import type { CrawledPage, Finding } from '../types/index.js';
 
 /**
@@ -25,9 +25,9 @@ export interface PageMeta {
   canonical: string | null;
 }
 
-export function extractMeta(page: CrawledPage): PageMeta | null {
+export function extractMeta(page: CrawledPage, preloadedCheerio?: CheerioAPI | null): PageMeta | null {
   if (!page.isHtml) return null;
-  const $ = load(page.html, { xml: { decodeEntities: false } });
+  const $ = preloadedCheerio ?? load(page.html, { xml: { decodeEntities: false } });
   const title = $('head > title').first().text().trim();
   const description = $('meta[name="description"]').attr('content')?.trim() ?? '';
   const canonical = $('link[rel="canonical"]').attr('href')?.trim() ?? null;

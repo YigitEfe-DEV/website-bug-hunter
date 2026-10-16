@@ -1,4 +1,4 @@
-import { load } from 'cheerio';
+import { load, type CheerioAPI } from 'cheerio';
 import { assertSafeUrl, UnsafeUrlError } from '../fetcher/safeUrl.js';
 import { fetchPage, FetchError } from '../fetcher/httpClient.js';
 import type { Confidence, CrawledPage, Finding, ScanConfig } from '../types/index.js';
@@ -17,9 +17,10 @@ export async function scanImages(
   config: ScanConfig,
   cache: ProbeCache,
   signal?: AbortSignal,
+  preloadedCheerio?: CheerioAPI | null,
 ): Promise<{ findings: Finding[] }> {
   if (!page.isHtml) return { findings: [] };
-  const $ = load(page.html, { xml: { decodeEntities: false } });
+  const $ = preloadedCheerio ?? load(page.html, { xml: { decodeEntities: false } });
   const srcs = new Set<string>();
   $('img[src]').each((_, el) => {
     const s = $(el).attr('src');

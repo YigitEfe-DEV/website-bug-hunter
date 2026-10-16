@@ -401,6 +401,33 @@ function scoreFormulaBreakdown(findings: Finding[]): {
   return { confirmedErrors, probableErrors, inconclusiveErrors, confirmedWarnings, probableWarnings, infos };
 }
 
+/**
+ * Build a plain-text rendering of the health-score formula with the
+ * current report's counts filled in. Used by the inline <details>
+ * disclosure inside the score stat — rendered server-side so the report
+ * stays self-contained and works with no JS.
+ */
+function scoreFormulaString(findings: Finding[]): string {
+  const b = scoreFormulaBreakdown(findings);
+  const lines = [
+    'Heuristic health score (project-specific, NOT an industry standard).',
+    '',
+    'score = 100',
+    '  - 10 × confirmed errors (' + b.confirmedErrors + ')',
+    '  -  5 × probable errors (' + b.probableErrors + ')',
+    '  -  2 × inconclusive errors (' + b.inconclusiveErrors + ')',
+    '  -  3 × confirmed warnings (' + b.confirmedWarnings + ')',
+    '  -  1 × probable warnings (' + b.probableWarnings + ')',
+    '  - 0.1 × any info finding (' + b.infos + ')',
+    'clamped to [0, 100]',
+    '',
+    'Inconclusive findings barely affect the score because the',
+    'scanner could not verify them — penalising hard would punish',
+    'users for transient timeouts.',
+  ];
+  return lines.join('\n');
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => {
     switch (c) {
@@ -439,7 +466,23 @@ export function renderHtml(result: ScanResult): string {
   const statusLabel = partial ? 'partial' : 'complete';
 
   const sorted = sortFindingsForReport(findings);
-  const findingsHtml = sorted.map((f, i) => renderFindingCard(f, i)).join('\n');
+  // Pre-compute the lowercased searchable text once at render time so the
+  // search input does not invoke textContent on every card on every keystroke.
+  // reportJson below carries the same data but the live DOM search uses
+  // data-search to keep per-keystroke cost O(filters), not O(cards x tree).
+  const searchableFor = (f: Finding): string =>
+    [
+      f.message,
+      f.page,
+      f.type,
+      f.severity,
+      f.confidence,
+      f.explanation ?? '',
+      f.fix ?? '',
+    ]
+      .join(' ')
+      .toLowerCase();
+  const findingsHtml = sorted.map((f, i) => renderFindingCard(f, i, searchableFor(f))).join('\n');
 
   // Unique types for the type-filter dropdown
   const types = [...new Set(findings.map((f) => f.type))].sort();
@@ -501,12 +544,22 @@ export function renderHtml(result: ScanResult): string {
     .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
     .status-pill[data-state="success"] .dot { background: var(--good); }
     .status-pill[data-state="partial"] .dot { background: var(--mid); }
+    .status-pill[data-state="error"] .dot { background: var(--bad); }
     .status-banner {
       margin: 16px 24px 0; padding: 12px 16px; border-radius: 8px;
       border: 1px solid var(--border); background: var(--card); font-size: 13px;
     }
     .status-banner.warn { border-color: var(--warning); background: rgba(245,200,75,0.08); }
+    .status-banner.err { border-color: var(--error); background: rgba(255,107,107,0.08); }
     .status-banner.hide { display: none; }
+    /* Visible focus for keyboard navigation. Color-only focus is unreliable
+       and inaccessible; we use a 2px outline + offset that works on both
+       themes. Outlines are independent of the element's border-box, so the
+       rule does not reshape buttons/inputs whose border-radius differs. */
+    :focus-visible {
+      outline: 2px solid var(--info);
+      outline-offset: 2px;
+    }
     .summary {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       gap: 12px; padding: 16px 24px;
@@ -529,6 +582,27 @@ export function renderHtml(result: ScanResult): string {
     .stat.score-good .v { color: var(--good); }
     .stat.score-mid .v { color: var(--mid); }
     .stat.score-bad .v { color: var(--bad); }
+    /* The "?" trigger inside the score stat. Replaced the previous click
+       button + alert() popup with a native <details>/<summary> so it is
+       keyboard-accessible without JS. */
+    details.score-formula { margin-top: 6px; }
+    details.score-formula > summary {
+      cursor: pointer; list-style: none; color: var(--muted);
+      font-size: 11px; user-select: none;
+    }
+    details.score-formula > summary::-webkit-details-marker { display: none; }
+    details.score-formula > summary::before {
+      content: "? "; display: inline-block; width: 14px; height: 14px;
+      line-height: 14px; border-radius: 50%; background: var(--border);
+      color: var(--muted); text-align: center; font-weight: 600;
+    }
+    details.score-formula[open] > summary::before { background: var(--info); color: var(--bg); }
+    details.score-formula .formula-body {
+      margin: 6px 0 0; padding: 8px 10px; border-radius: 6px;
+      background: rgba(0,0,0,0.2); font-size: 12px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+      color: var(--text);
+    }
     .controls {
       padding: 0 24px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
     }
@@ -562,13 +636,22 @@ export function renderHtml(result: ScanResult): string {
       padding: 0; border: none; display: flex; align-items: center;
       gap: 8px; margin-bottom: 6px; flex-wrap: wrap;
     }
-    .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+    /* Severity uses an explicit glyph in addition to color — color alone is
+       not a reliable signal for color-blind users or screen readers. The
+       aria-label on the wrapping badge keeps the meaning explicit. */
     .finding-error .badge.severity { background: rgba(255,107,107,0.15); color: var(--error); }
+    .finding-error .badge.severity::before { content: "✕"; font-size: 10px; line-height: 1; }
     .finding-warning .badge.severity { background: rgba(245,200,75,0.15); color: var(--warning); }
+    .finding-warning .badge.severity::before { content: "!"; font-size: 10px; line-height: 1; font-weight: 700; }
     .finding-info .badge.severity { background: rgba(116,192,252,0.15); color: var(--info); }
+    .finding-info .badge.severity::before { content: "i"; font-family: serif; font-size: 11px; line-height: 1; font-style: italic; }
     .badge.confidence.confirmed { background: rgba(81,207,102,0.15); color: var(--confirmed); }
+    .badge.confidence.confirmed::before { content: "✓"; font-size: 10px; line-height: 1; }
     .badge.confidence.probable { background: rgba(116,192,252,0.15); color: var(--probable); }
+    .badge.confidence.probable::before { content: "~"; font-size: 10px; line-height: 1; font-weight: 700; }
     .badge.confidence.inconclusive { background: rgba(140,147,163,0.15); color: var(--inconclusive); }
+    .badge.confidence.inconclusive::before { content: "?"; font-size: 10px; line-height: 1; font-weight: 700; }
     .type { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
     .msg { margin: 4px 0; font-size: 14px; }
     .page { margin: 4px 0; font-size: 12px; color: var(--muted); word-break: break-all; }
@@ -606,13 +689,13 @@ export function renderHtml(result: ScanResult): string {
     <div class="meta">
       Target <strong>${escapeHtml(result.target)}</strong> · ${escapeHtml(startedAt)} · ${duration}s
     </div>
-    <span class="status-pill" data-state="${statusState}"><span class="dot"></span><span>${statusLabel}</span></span>
+    <span class="status-pill" data-state="${statusState}" role="status" aria-live="polite" aria-label="Scan status"><span class="dot" aria-hidden="true"></span><span>${statusLabel}</span></span>
   </header>
 
   ${result.budgetExhausted
-    ? `<div class="status-banner warn">Scan ended because the budget was exhausted (max pages, max depth, or max time). Results are incomplete.</div>`
+    ? `<div class="status-banner warn" role="status">Scan ended because the budget was exhausted (max pages, max depth, or max time). Results are incomplete.</div>`
     : (result.pagesFailed && result.pagesFailed > 0
-      ? `<div class="status-banner warn">${result.pagesFailed} page(s) failed to load. Their findings are reported but the pages themselves were not crawled.</div>`
+      ? `<div class="status-banner warn" role="status">${result.pagesFailed} page(s) failed to load. Their findings are reported but the pages themselves were not crawled.</div>`
       : '')
   }
 
@@ -630,53 +713,56 @@ export function renderHtml(result: ScanResult): string {
     <div class="stat ${scoreClass}" title="Heuristic health score">
       <div class="v">${score}</div>
       <div class="l">heuristic score</div>
-      <span class="info-icon" title="Click for the formula">?</span>
+      <details class="score-formula">
+        <summary aria-label="Show health score formula">formula</summary>
+        <pre class="formula-body">${escapeHtml(scoreFormulaString(findings))}</pre>
+      </details>
     </div>
     <div class="stat"><div class="v">${duration}s</div><div class="l">duration</div></div>
   </section>
 
   <div class="controls">
-    <span class="group">
+    <div class="group" role="group" aria-label="Filter by severity">
       <span class="group-label">Severity</span>
-      <button data-kind="severity" data-filter="all" class="active">All</button>
-      <button data-kind="severity" data-filter="error">Errors</button>
-      <button data-kind="severity" data-filter="warning">Warnings</button>
-      <button data-kind="severity" data-filter="info">Info</button>
-    </span>
-    <span class="group">
+      <button type="button" data-kind="severity" data-filter="all" class="active" aria-pressed="true">All</button>
+      <button type="button" data-kind="severity" data-filter="error" aria-pressed="false">Errors</button>
+      <button type="button" data-kind="severity" data-filter="warning" aria-pressed="false">Warnings</button>
+      <button type="button" data-kind="severity" data-filter="info" aria-pressed="false">Info</button>
+    </div>
+    <div class="group" role="group" aria-label="Filter by confidence">
       <span class="group-label">Confidence</span>
-      <button data-kind="confidence" data-filter="all">All</button>
-      <button data-kind="confidence" data-filter="confirmed">Confirmed</button>
-      <button data-kind="confidence" data-filter="probable">Probable</button>
-      <button data-kind="confidence" data-filter="inconclusive">Inconclusive</button>
-    </span>
-    <span class="group">
-      <span class="group-label">Type</span>
-      <select id="typeFilter"><option value="all">All</option>${types.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>
-    </span>
-    <span class="group">
-      <span class="group-label">Page</span>
-      <input id="pageFilter" type="text" placeholder="filter by page URL" />
-    </span>
-    <span class="group">
-      <span class="group-label">Search</span>
-      <input id="search" type="search" placeholder="search message, URL, or type…" />
-    </span>
-    <span class="group">
-      <span class="group-label">Sort</span>
-      <select id="sortBy">
+      <button type="button" data-kind="confidence" data-filter="all" class="active" aria-pressed="true">All</button>
+      <button type="button" data-kind="confidence" data-filter="confirmed" aria-pressed="false">Confirmed</button>
+      <button type="button" data-kind="confidence" data-filter="probable" aria-pressed="false">Probable</button>
+      <button type="button" data-kind="confidence" data-filter="inconclusive" aria-pressed="false">Inconclusive</button>
+    </div>
+    <div class="group">
+      <label class="group-label" for="typeFilter">Type</label>
+      <select id="typeFilter" aria-label="Filter by finding type"><option value="all">All</option>${types.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>
+    </div>
+    <div class="group">
+      <label class="group-label" for="pageFilter">Page</label>
+      <input id="pageFilter" type="text" placeholder="filter by page URL" aria-label="Filter findings by page URL" />
+    </div>
+    <div class="group">
+      <label class="group-label" for="search">Search</label>
+      <input id="search" type="search" placeholder="search message, URL, or type…" aria-label="Search findings by message, URL, or type" />
+    </div>
+    <div class="group">
+      <label class="group-label" for="sortBy">Sort</label>
+      <select id="sortBy" aria-label="Sort findings">
         <option value="severity">Severity</option>
         <option value="url">Page URL</option>
       </select>
-    </span>
+    </div>
   </div>
 
-  <div class="results-meta">
+  <div class="results-meta" aria-live="polite" aria-atomic="true">
     <span id="visibleCount">${findings.length}</span>
     <span>of</span>
     <span id="totalCount">${findings.length}</span>
     <span>findings shown</span>
-    <button id="resetFilters" class="reset-filters hide">Reset filters</button>
+    <button type="button" id="resetFilters" class="reset-filters hide">Reset filters</button>
   </div>
 
   <main id="findings">
@@ -722,7 +808,10 @@ export function renderHtml(result: ScanResult): string {
         const matchesConfidence = f.confidence === 'all' || conf === f.confidence;
         const matchesType = f.type === 'all' || typ === f.type;
         const matchesPage = !f.page || page.includes(f.page);
-        const matchesSearch = !f.search || (card.textContent || '').toLowerCase().includes(f.search);
+        // Use the precomputed data-search attribute (lowercased at render
+        // time) instead of reading card.textContent on every keystroke.
+        // For large reports (>10k findings) the saved DOM walk matters.
+        const matchesSearch = !f.search || (card.dataset.search || '').includes(f.search);
         const matches = matchesSeverity && matchesConfidence && matchesType && matchesPage && matchesSearch;
         card.classList.toggle('hide', !matches);
         if (matches) visible++;
@@ -738,7 +827,7 @@ export function renderHtml(result: ScanResult): string {
         if (!document.getElementById('filterEmpty')) {
           els.findings.insertAdjacentHTML(
             'beforeend',
-            '<div id="filterEmpty" class="empty"><h3>No findings match the current filters.</h3><p>Try resetting filters or broadening the search.</p></div>',
+            '<div id="filterEmpty" class="empty" role="status"><h3>No findings match the current filters.</h3><p>Try resetting filters or broadening the search.</p></div>',
           );
         }
       } else {
@@ -774,8 +863,13 @@ export function renderHtml(result: ScanResult): string {
         const value = btn.dataset.filter;
         if (kind === 'severity') state.filter.severity = value;
         if (kind === 'confidence') state.filter.confidence = value;
-        document.querySelectorAll('.controls button[data-kind="' + kind + '"]').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
+        // Toggle visual + ARIA state for the active filter so screen readers
+        // learn which filter is applied, not just sighted users.
+        document.querySelectorAll('.controls button[data-kind="' + kind + '"]').forEach((b) => {
+          const isActive = b.dataset.filter === value;
+          b.classList.toggle('active', isActive);
+          b.setAttribute('aria-pressed', String(isActive));
+        });
         applyFilters();
       });
     });
@@ -786,10 +880,16 @@ export function renderHtml(result: ScanResult): string {
     els.resetFilters.addEventListener('click', () => {
       state.filter = { severity: 'all', confidence: 'all', type: 'all', page: '', search: '' };
       state.sort = 'severity';
-      document.querySelectorAll('.controls button[data-kind="severity"]').forEach((b) => b.classList.toggle('active', b.dataset.filter === 'all'));
-      document.querySelectorAll('.controls button[data-kind="confidence"]').forEach((b) => b.classList.remove('active'));
-      const fc = document.querySelector('.controls button[data-kind="confidence"][data-filter="all"]');
-      if (fc) fc.classList.add('active');
+      document.querySelectorAll('.controls button[data-kind="severity"]').forEach((b) => {
+        const isActive = b.dataset.filter === 'all';
+        b.classList.toggle('active', isActive);
+        b.setAttribute('aria-pressed', String(isActive));
+      });
+      document.querySelectorAll('.controls button[data-kind="confidence"]').forEach((b) => {
+        const isActive = b.dataset.filter === 'all';
+        b.classList.toggle('active', isActive);
+        b.setAttribute('aria-pressed', String(isActive));
+      });
       els.typeFilter.value = 'all';
       els.pageFilter.value = '';
       els.search.value = '';
@@ -797,47 +897,12 @@ export function renderHtml(result: ScanResult): string {
       sortFindings();
       applyFilters();
     });
-
-    // Score formula: click the ? icon next to the score to see it.
-    (function wireScoreFormula() {
-      const scoreStat = els.summary ? Array.from(els.summary.querySelectorAll('.stat')).find((s) => s.querySelector('.info-icon')) : null;
-      if (!scoreStat) return;
-      const b = (REPORT.findings || []);
-      const breakdown = {
-        confirmedErrors: 0, probableErrors: 0, inconclusiveErrors: 0,
-        confirmedWarnings: 0, probableWarnings: 0, infos: 0,
-      };
-      for (const f of b) {
-        if (f.severity === 'error') {
-          if (f.confidence === 'confirmed') breakdown.confirmedErrors++;
-          else if (f.confidence === 'probable') breakdown.probableErrors++;
-          else breakdown.inconclusiveErrors++;
-        } else if (f.severity === 'warning') {
-          if (f.confidence === 'confirmed') breakdown.confirmedWarnings++;
-          else if (f.confidence === 'probable') breakdown.probableWarnings++;
-        } else if (f.severity === 'info') breakdown.infos++;
-      }
-      scoreStat.querySelector('.info-icon').addEventListener('click', () => {
-        alert([
-          'Heuristic health score (project-specific, NOT an industry standard).',
-          '',
-          'score = 100',
-          '  - 10 \\u00d7 confirmed errors (' + breakdown.confirmedErrors + ')',
-          '  -  5 \\u00d7 probable errors (' + breakdown.probableErrors + ')',
-          '  -  2 \\u00d7 inconclusive errors (' + breakdown.inconclusiveErrors + ')',
-          '  -  3 \\u00d7 confirmed warnings (' + breakdown.confirmedWarnings + ')',
-          '  -  1 \\u00d7 probable warnings (' + breakdown.probableWarnings + ')',
-          '  - 0.1 \\u00d7 any info finding (' + breakdown.infos + ')',
-          'clamped to [0, 100]',
-        ].join('\\n'));
-      });
-    })();
   </script>
 </body>
 </html>`;
 }
 
-function renderFindingCard(f: Finding, i: number): string {
+function renderFindingCard(f: Finding, i: number, searchText = ''): string {
   const detail = f.detail
     ? `<details class="detail"><summary>Evidence</summary><pre>${escapeHtml(JSON.stringify(f.detail, null, 2))}</pre></details>`
     : '';
@@ -848,12 +913,12 @@ function renderFindingCard(f: Finding, i: number): string {
     ? `<details class="why" open><summary>Why this matters</summary><p>${escapeHtml(f.explanation)}</p></details>`
     : '';
   const affected = f.affectedPages && f.affectedPages.length > 1
-    ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escapeHtml(p)}" rel="noopener">${escapeHtml(p)}</a></li>`).join('')}</ul></details>`
+    ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escapeHtml(p)}" rel="noopener" aria-label="Open affected page in new tab">${escapeHtml(p)}</a></li>`).join('')}</ul></details>`
     : '';
-  return `<article class="finding finding-${escapeHtml(f.severity)}" data-index="${i}" data-severity="${escapeHtml(f.severity)}" data-confidence="${escapeHtml(f.confidence)}" data-type="${escapeHtml(f.type)}" data-page="${escapeHtml(f.page || '')}">
+  return `<article class="finding finding-${escapeHtml(f.severity)}" data-index="${i}" data-severity="${escapeHtml(f.severity)}" data-confidence="${escapeHtml(f.confidence)}" data-type="${escapeHtml(f.type)}" data-page="${escapeHtml(f.page || '')}" data-search="${escapeHtml(searchText)}">
   <header>
-    <span class="badge severity">${escapeHtml(f.severity)}</span>
-    <span class="badge confidence confidence-${escapeHtml(f.confidence)}">${escapeHtml(f.confidence)}</span>
+    <span class="badge severity" aria-label="Severity ${escapeHtml(f.severity)}">${escapeHtml(f.severity)}</span>
+    <span class="badge confidence confidence-${escapeHtml(f.confidence)}" aria-label="Confidence ${escapeHtml(f.confidence)}">${escapeHtml(f.confidence)}</span>
     <span class="type">${escapeHtml(f.type)}</span>
   </header>
   <p class="msg">${escapeHtml(f.message)}</p>

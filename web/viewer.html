@@ -49,6 +49,14 @@
       color: var(--text);
       line-height: 1.5;
     }
+    /* Visible focus indicator for keyboard users. Color-only focus is
+       unreliable and inaccessible; outline-offset keeps it from being
+       hidden by element backgrounds. Outlines are independent of the
+       element's border-box, so this doesn't reshape pill buttons. */
+    :focus-visible {
+      outline: 2px solid var(--info);
+      outline-offset: 2px;
+    }
     header.top {
       padding: 24px;
       border-bottom: 1px solid var(--border);
@@ -151,6 +159,28 @@
     .stat.score-good .v { color: var(--good); }
     .stat.score-mid .v { color: var(--mid); }
     .stat.score-bad .v { color: var(--bad); }
+    /* Score formula disclosure — native <details>/<summary>, keyboard-
+       accessible without JS. */
+    details.score-formula { margin-top: 6px; }
+    details.score-formula > summary {
+      cursor: pointer; list-style: none; color: var(--muted);
+      font-size: 11px; user-select: none;
+      padding: 0;
+    }
+    details.score-formula > summary::-webkit-details-marker { display: none; }
+    details.score-formula > summary::before {
+      content: "? "; display: inline-block; width: 14px; height: 14px;
+      line-height: 14px; border-radius: 50%; background: var(--border);
+      color: var(--muted); text-align: center; font-weight: 600;
+    }
+    details.score-formula[open] > summary::before { background: var(--info); color: var(--bg); }
+    details.score-formula .formula-body {
+      margin: 6px 0 0; padding: 8px 10px; border-radius: 6px;
+      background: rgba(0,0,0,0.25); font-size: 12px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+      color: var(--text);
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
 
     .controls {
       padding: 0 24px 12px;
@@ -238,13 +268,24 @@
       text-transform: uppercase;
       letter-spacing: 0.5px;
       font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
     }
+    /* Severity uses an explicit glyph in addition to color — color alone is
+       not reliable for color-blind users or screen readers. */
     .finding-error .badge.severity { background: rgba(255,107,107,0.15); color: var(--error); }
+    .finding-error .badge.severity::before { content: "✕"; font-size: 10px; line-height: 1; }
     .finding-warning .badge.severity { background: rgba(245,200,75,0.15); color: var(--warning); }
+    .finding-warning .badge.severity::before { content: "!"; font-size: 10px; line-height: 1; font-weight: 700; }
     .finding-info .badge.severity { background: rgba(116,192,252,0.15); color: var(--info); }
+    .finding-info .badge.severity::before { content: "i"; font-family: serif; font-size: 11px; line-height: 1; font-style: italic; }
     .badge.confidence.confirmed { background: rgba(81,207,102,0.15); color: var(--confirmed); }
+    .badge.confidence.confirmed::before { content: "✓"; font-size: 10px; line-height: 1; }
     .badge.confidence.probable { background: rgba(116,192,252,0.15); color: var(--probable); }
+    .badge.confidence.probable::before { content: "~"; font-size: 10px; line-height: 1; font-weight: 700; }
     .badge.confidence.inconclusive { background: rgba(140,147,163,0.15); color: var(--inconclusive); }
+    .badge.confidence.inconclusive::before { content: "?"; font-size: 10px; line-height: 1; font-weight: 700; }
     .type { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
     .msg { margin: 4px 0; font-size: 14px; }
     .page { margin: 4px 0; font-size: 12px; color: var(--muted); word-break: break-all; }
@@ -368,12 +409,12 @@
 <body>
   <header class="top">
     <div class="logo">
-      <span class="dot"></span>
+      <span class="dot" aria-hidden="true"></span>
       <h1>Website Bug Hunter</h1>
     </div>
     <div>
-      <span id="statusPill" class="status-pill hide" data-state="idle">
-        <span class="dot"></span><span id="statusPillText">idle</span>
+      <span id="statusPill" class="status-pill hide" data-state="idle" role="status" aria-live="polite" aria-label="Report status">
+        <span class="dot" aria-hidden="true"></span><span id="statusPillText">idle</span>
       </span>
       <a href="https://github.com/website-bug-hunter" style="color: var(--link); text-decoration: none; font-size: 13px; margin-left: 12px;">
         github.com/website-bug-hunter ↗
@@ -383,7 +424,7 @@
 
   <div id="errorBanner" class="status-banner err hide" role="alert"></div>
 
-  <section id="loading" class="loading hide">
+  <section id="loading" class="loading hide" role="status" aria-live="polite">
     <div class="spinner" aria-hidden="true"></div>
     <div>Loading report…</div>
   </section>
@@ -392,14 +433,15 @@
     <h2>Open a report</h2>
     <p>Drop a <code>wbh-report.json</code> here, or pick a file. Nothing leaves your browser.</p>
     <label for="file" id="uploadLabel">Choose JSON report</label>
-    <input id="file" type="file" accept="application/json,.json" />
-    <section id="historySection" class="history">
+    <input id="file" type="file" accept="application/json,.json" aria-describedby="uploadHelp" />
+    <p id="uploadHelp" class="muted" style="font-size: 12px; margin-top: 12px;">Use the keyboard, mouse, or drag-and-drop. Reports are processed locally — no network call is made.</p>
+    <section id="historySection" class="history" aria-labelledby="historyHeader">
       <header>
-        <h3>Recent reports</h3>
+        <h3 id="historyHeader">Recent reports</h3>
         <p class="muted">Stored only in this browser's localStorage. No server. Cleared if you clear browser data. Capped at 20 entries.</p>
       </header>
       <ul id="historyList" aria-live="polite"></ul>
-      <button id="clearHistory" class="muted-button hide">Clear history</button>
+      <button type="button" id="clearHistory" class="muted-button hide">Clear history</button>
     </section>
   </section>
 
@@ -407,46 +449,46 @@
     <div id="partialBanner" class="status-banner warn hide" role="status"></div>
     <div class="summary" id="summary"></div>
     <div class="controls" id="controls">
-      <span class="group">
+      <div class="group" role="group" aria-label="Filter by severity">
         <span class="group-label">Severity</span>
-        <button data-kind="severity" data-filter="all" class="active">All</button>
-        <button data-kind="severity" data-filter="error">Errors</button>
-        <button data-kind="severity" data-filter="warning">Warnings</button>
-        <button data-kind="severity" data-filter="info">Info</button>
-      </span>
-      <span class="group">
+        <button type="button" data-kind="severity" data-filter="all" class="active" aria-pressed="true">All</button>
+        <button type="button" data-kind="severity" data-filter="error" aria-pressed="false">Errors</button>
+        <button type="button" data-kind="severity" data-filter="warning" aria-pressed="false">Warnings</button>
+        <button type="button" data-kind="severity" data-filter="info" aria-pressed="false">Info</button>
+      </div>
+      <div class="group" role="group" aria-label="Filter by confidence">
         <span class="group-label">Confidence</span>
-        <button data-kind="confidence" data-filter="all">All</button>
-        <button data-kind="confidence" data-filter="confirmed">Confirmed</button>
-        <button data-kind="confidence" data-filter="probable">Probable</button>
-        <button data-kind="confidence" data-filter="inconclusive">Inconclusive</button>
-      </span>
-      <span class="group">
-        <span class="group-label">Type</span>
-        <select id="typeFilter"><option value="all">All</option></select>
-      </span>
-      <span class="group">
-        <span class="group-label">Page</span>
-        <input id="pageFilter" type="text" placeholder="filter by page URL" />
-      </span>
-      <span class="group">
-        <span class="group-label">Search</span>
-        <input id="search" type="search" placeholder="search message, URL, or type…" />
-      </span>
-      <span class="group">
-        <span class="group-label">Sort</span>
-        <select id="sortBy">
+        <button type="button" data-kind="confidence" data-filter="all" class="active" aria-pressed="true">All</button>
+        <button type="button" data-kind="confidence" data-filter="confirmed" aria-pressed="false">Confirmed</button>
+        <button type="button" data-kind="confidence" data-filter="probable" aria-pressed="false">Probable</button>
+        <button type="button" data-kind="confidence" data-filter="inconclusive" aria-pressed="false">Inconclusive</button>
+      </div>
+      <div class="group">
+        <label class="group-label" for="typeFilter">Type</label>
+        <select id="typeFilter" aria-label="Filter by finding type"><option value="all">All</option></select>
+      </div>
+      <div class="group">
+        <label class="group-label" for="pageFilter">Page</label>
+        <input id="pageFilter" type="text" placeholder="filter by page URL" aria-label="Filter findings by page URL" />
+      </div>
+      <div class="group">
+        <label class="group-label" for="search">Search</label>
+        <input id="search" type="search" placeholder="search message, URL, or type…" aria-label="Search findings by message, URL, or type" />
+      </div>
+      <div class="group">
+        <label class="group-label" for="sortBy">Sort</label>
+        <select id="sortBy" aria-label="Sort findings">
           <option value="severity">Severity</option>
           <option value="url">Page URL</option>
         </select>
-      </span>
+      </div>
     </div>
-    <div class="results-meta">
+    <div class="results-meta" aria-live="polite" aria-atomic="true">
       <span id="visibleCount">0</span>
       <span>of</span>
       <span id="totalCount">0</span>
       <span>findings shown</span>
-      <button id="resetFilters" class="reset-filters hide">Reset filters</button>
+      <button type="button" id="resetFilters" class="reset-filters hide">Reset filters</button>
     </div>
     <main id="findings"></main>
   </section>
@@ -597,8 +639,12 @@
         const value = btn.dataset.filter;
         if (kind === 'severity') state.filter.severity = value;
         if (kind === 'confidence') state.filter.confidence = value;
-        document.querySelectorAll(`.controls button[data-kind="${kind}"]`).forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
+        // Reflect both visual "active" class and the screen-reader state.
+        document.querySelectorAll(`.controls button[data-kind="${kind}"]`).forEach((b) => {
+          const isActive = b.dataset.filter === value;
+          b.classList.toggle('active', isActive);
+          b.setAttribute('aria-pressed', String(isActive));
+        });
         applyFilters();
       });
     });
@@ -621,11 +667,17 @@
     els.resetFilters.addEventListener('click', () => {
       state.filter = { severity: 'all', confidence: 'all', type: 'all', page: '', search: '' };
       state.sort = 'severity';
-      // Reflect in UI
-      document.querySelectorAll('.controls button[data-kind="severity"]').forEach((b) => b.classList.toggle('active', b.dataset.filter === 'all'));
-      document.querySelectorAll('.controls button[data-kind="confidence"]').forEach((b) => b.classList.remove('active'));
-      const firstConfidence = document.querySelector('.controls button[data-kind="confidence"][data-filter="all"]');
-      if (firstConfidence) firstConfidence.classList.add('active');
+      // Reflect in UI + ARIA.
+      document.querySelectorAll('.controls button[data-kind="severity"]').forEach((b) => {
+        const isActive = b.dataset.filter === 'all';
+        b.classList.toggle('active', isActive);
+        b.setAttribute('aria-pressed', String(isActive));
+      });
+      document.querySelectorAll('.controls button[data-kind="confidence"]').forEach((b) => {
+        const isActive = b.dataset.filter === 'all';
+        b.classList.toggle('active', isActive);
+        b.setAttribute('aria-pressed', String(isActive));
+      });
       els.typeFilter.value = 'all';
       els.pageFilter.value = '';
       els.search.value = '';
@@ -694,20 +746,14 @@
         <div class="stat ${scoreClass}" title="Heuristic health score">
           <div class="v">${score}</div>
           <div class="l">heuristic score</div>
-          <span class="info-icon" title="Click for the formula">?</span>
+          <details class="score-formula">
+            <summary aria-label="Show health score formula">formula</summary>
+            <pre class="formula-body">${escape(scoreFormula(findings))}</pre>
+          </details>
         </div>
         <div class="stat"><div class="v" title="${escape(startedAt)}">${escape(startedAt.substring(0, 19).replace('T', ' '))}</div><div class="l">started (UTC)</div></div>
         <div class="stat"><div class="v">${duration}s</div><div class="l">duration</div></div>
       `;
-      // Wire score formula tooltip
-      const scoreStat = els.summary.querySelector('.stat:last-of-type');
-      const icon = scoreStat && scoreStat.querySelector('.info-icon');
-      if (icon) {
-        icon.addEventListener('click', (e) => {
-          e.stopPropagation();
-          alert(scoreFormula(findings));
-        });
-      }
     }
 
     function setStatus(stateName, label) {
@@ -831,12 +877,19 @@
         ? `<details class="why" open><summary>Why this matters</summary><p>${escape(f.explanation)}</p></details>`
         : '';
       const affected = (f.affectedPages && f.affectedPages.length > 1)
-        ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escape(p)}" rel="noopener" target="_blank">${escape(p)}</a></li>`).join('')}</ul></details>`
+        ? `<details class="affected"><summary>Also on ${f.affectedPages.length - 1} other page${f.affectedPages.length - 1 === 1 ? '' : 's'}</summary><ul>${f.affectedPages.map((p) => `<li><a href="${escape(p)}" rel="noopener" target="_blank" aria-label="Open affected page in new tab">${escape(p)}</a></li>`).join('')}</ul></details>`
         : '';
-      return `<article class="finding finding-${escape(f.severity)}" data-index="${i}" data-severity="${escape(f.severity)}" data-confidence="${escape(f.confidence)}" data-type="${escape(f.type)}" data-page="${escape(f.page || '')}">
+      // Pre-compute the lowercased searchable text once. The filter uses
+      // dataset.search so each keystroke is O(1) per card instead of
+      // a per-card textContent walk over the rendered subtree.
+      const searchText = [
+        f.message, f.page, f.type, f.severity, f.confidence,
+        f.explanation || '', f.fix || '',
+      ].join(' ').toLowerCase();
+      return `<article class="finding finding-${escape(f.severity)}" data-index="${i}" data-severity="${escape(f.severity)}" data-confidence="${escape(f.confidence)}" data-type="${escape(f.type)}" data-page="${escape(f.page || '')}" data-search="${escape(searchText)}">
         <header>
-          <span class="badge severity">${escape(f.severity)}</span>
-          <span class="badge confidence confidence-${escape(f.confidence)}">${escape(f.confidence)}</span>
+          <span class="badge severity" aria-label="Severity ${escape(f.severity)}">${escape(f.severity)}</span>
+          <span class="badge confidence confidence-${escape(f.confidence)}" aria-label="Confidence ${escape(f.confidence)}">${escape(f.confidence)}</span>
           <span class="type">${escape(f.type)}</span>
         </header>
         <p class="msg">${escape(f.message)}</p>
@@ -862,10 +915,11 @@
         const matchesConfidence = f.confidence === 'all' || conf === f.confidence;
         const matchesType = f.type === 'all' || typ === f.type;
         const matchesPage = !f.page || page.includes(f.page);
-        // Search matches any visible text field. The article's textContent
-        // includes type, message, page, and the (collapsed) details; that's
-        // good enough for substring matching.
-        const matchesSearch = !f.search || (card.textContent || '').toLowerCase().includes(f.search);
+        // Use precomputed data-search (lowercased at render time) instead
+        // of reading card.textContent on every keystroke. For reports with
+        // thousands of cards the saved DOM walk is the difference between
+        // a snappy search and a stalled input.
+        const matchesSearch = !f.search || (card.dataset.search || '').includes(f.search);
         const matches = matchesSeverity && matchesConfidence && matchesType && matchesPage && matchesSearch;
         card.classList.toggle('hide', !matches);
         if (matches) visible++;
@@ -883,7 +937,7 @@
         if (!document.getElementById('filterEmpty')) {
           els.findings.insertAdjacentHTML(
             'beforeend',
-            '<div id="filterEmpty" class="empty"><h3>No findings match the current filters.</h3><p>Try resetting filters or broadening the search.</p></div>',
+            '<div id="filterEmpty" class="empty" role="status"><h3>No findings match the current filters.</h3><p>Try resetting filters or broadening the search.</p></div>',
           );
         }
       } else {
@@ -1011,10 +1065,10 @@
             <div class="h-meta">saved ${escape(ts)} · ${it.pagesScanned || 0} pages · ${findingsCount} findings (${errCount} errors)</div>
           </div>
           <div class="h-actions">
-            <button data-action="open" data-id="${escape(it.id)}" title="Open in viewer">Open</button>
-            <button data-action="json" data-id="${escape(it.id)}" title="Download JSON">JSON</button>
-            <button data-action="csv" data-id="${escape(it.id)}" title="Download CSV">CSV</button>
-            <button data-action="del" data-id="${escape(it.id)}" title="Delete from history">Delete</button>
+            <button type="button" data-action="open" data-id="${escape(it.id)}" title="Open in viewer" aria-label="Open ${escape(it.target || '(no target)')} in viewer">Open</button>
+            <button type="button" data-action="json" data-id="${escape(it.id)}" title="Download JSON" aria-label="Download JSON for ${escape(it.target || '(no target)')}">JSON</button>
+            <button type="button" data-action="csv" data-id="${escape(it.id)}" title="Download CSV" aria-label="Download CSV for ${escape(it.target || '(no target)')}">CSV</button>
+            <button type="button" data-action="del" data-id="${escape(it.id)}" title="Delete from history" aria-label="Delete ${escape(it.target || '(no target)')} from history">Delete</button>
           </div>
         </li>`;
       }).join('');

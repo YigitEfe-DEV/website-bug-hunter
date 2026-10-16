@@ -1,4 +1,4 @@
-import { load } from 'cheerio';
+import { load, type CheerioAPI } from 'cheerio';
 import type { Confidence, CrawledPage, Finding } from '../types/index.js';
 
 /**
@@ -17,9 +17,9 @@ import type { Confidence, CrawledPage, Finding } from '../types/index.js';
  * Note: SEO/accessibility findings here are scoped heuristics. We do NOT
  * claim a full SEO audit or accessibility certification.
  */
-export function scanMeta(page: CrawledPage): Finding[] {
+export function scanMeta(page: CrawledPage, preloadedCheerio?: CheerioAPI | null): Finding[] {
   if (!page.isHtml) return [];
-  const $ = load(page.html, { xml: { decodeEntities: false } });
+  const $ = preloadedCheerio ?? load(page.html, { xml: { decodeEntities: false } });
   const out: Finding[] = [];
 
   // <title> — distinguish missing element from empty/whitespace-only.

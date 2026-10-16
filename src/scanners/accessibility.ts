@@ -1,4 +1,4 @@
-import { load } from 'cheerio';
+import { load, type CheerioAPI } from 'cheerio';
 import type { CrawledPage, Finding } from '../types/index.js';
 
 /**
@@ -17,9 +17,9 @@ import type { CrawledPage, Finding } from '../types/index.js';
  *   - Page has multiple <h1>s (warning)
  *   - Heading-level skip (h1 -> h3) (info)
  */
-export function scanAccessibility(page: CrawledPage): Finding[] {
+export function scanAccessibility(page: CrawledPage, preloadedCheerio?: CheerioAPI | null): Finding[] {
   if (!page.isHtml) return [];
-  const $ = load(page.html, { xml: { decodeEntities: false } });
+  const $ = preloadedCheerio ?? load(page.html, { xml: { decodeEntities: false } });
   const out: Finding[] = [];
 
   // Image alt text — only flag absent, not empty (empty is valid for decorative).
