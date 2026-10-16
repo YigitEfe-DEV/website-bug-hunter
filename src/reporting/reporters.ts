@@ -1,4 +1,4 @@
-import type { Confidence, Finding, FindingType, ScanResult } from '../types/index.js';
+import type { Confidence, Finding, FindingType, ScanResult, Severity } from '../types/index.js';
 
 export function renderJson(result: ScanResult): string {
   return JSON.stringify(result, null, 2);
@@ -132,7 +132,7 @@ function buildLimitations(): string[] {
   return [
     'Same-origin crawl only: cross-origin links are probed for status but not crawled.',
     'No authentication: pages behind login are not reachable.',
-    'Static HTML only by default: pages rendered entirely via client JS will appear empty and trigger a wave of meta_missing findings. Use --render-js if Playwright is installed.',
+    'Static HTML only by default: pages rendered entirely via client JS will appear empty during the static crawl and may trigger meta_missing findings. The optional Playwright scanners run on the initial URL once at the end of the scan; per-page client-side rendering is not enabled.',
     'JS-error and mobile-overflow scans require Playwright; if not installed, those checks are skipped with an INFO finding.',
     'No resume on crash: long scans do not survive restart.',
     'SEO/accessibility findings are scoped heuristics. We do NOT claim full SEO audit or accessibility (WCAG) conformance.',
@@ -189,6 +189,7 @@ export function renderText(result: ScanResult): string {
   lines.push(`Pages scanned: ${result.pagesScanned}`);
   lines.push(`Pages failed:  ${result.pagesFailed}`);
   if (result.pagesSkipped) lines.push(`Pages skipped (robots.txt): ${result.pagesSkipped}`);
+  if (result.pagesIncomplete) lines.push(`Pages incomplete (2xx but unanalyzable body): ${result.pagesIncomplete}`);
   if (result.cache) {
     const urlsChecked = result.cache.linkProbes + result.cache.assetProbes + result.pagesScanned;
     lines.push(`URLs checked: ${urlsChecked} (${result.cache.linkProbes} link probes, ${result.cache.assetProbes} asset probes)`);
@@ -207,9 +208,17 @@ export function renderText(result: ScanResult): string {
   // Severity + confidence summary
   const sevCounts = { error: 0, warning: 0, info: 0 };
   const confCounts: Record<Confidence, number> = { confirmed: 0, probable: 0, inconclusive: 0 };
+  // Skipped checks: findings emitted because a scanner couldn't run
+  // (e.g. Playwright/Chromium not installed). Currently identified by
+  // the `skip-` id prefix, which is a stable contract from
+  // src/scanners/browser.ts::skipped(). Tracked separately so the
+  // operator can tell "scanner couldn't run" apart from "scanner ran
+  // and got an inconclusive result".
+  let skippedChecks = 0;
   for (const f of result.findings) {
     sevCounts[f.severity]++;
     confCounts[f.confidence]++;
+    if (f.id.startsWith('skip-')) skippedChecks++;
   }
   lines.push('');
   lines.push(
@@ -218,6 +227,11 @@ export function renderText(result: ScanResult): string {
   lines.push(
     `By confidence: ${confCounts.confirmed} confirmed · ${confCounts.probable} probable · ${confCounts.inconclusive} inconclusive`,
   );
+  if (skippedChecks > 0) {
+    lines.push(
+      `Skipped checks: ${skippedChecks} (scanner could not run; see findings for install hint)`,
+    );
+  }
   lines.push(`Heuristic score: ${computeHealthScore(result.findings)} / 100 (project-specific, see HTML report for formula)`);
 
   const sorted = sortFindingsForReport(result.findings);
@@ -226,9 +240,13 @@ export function renderText(result: ScanResult): string {
   for (const [type, items] of grouped) {
     lines.push(`▸ ${type} (${items.length})`);
     for (const f of items) {
-      const conf = f.confidence.padEnd(11);
+      // Defensive: callers may pass partial findings (tests, library consumers
+      // building reports by hand). validateAndSanitize normally fills these,
+      // but the renderers are public and must not throw on missing fields.
+      const conf = (f.confidence ?? 'probable').padEnd(11);
+      const sev = (f.severity ?? 'warning').padEnd(7);
       lines.push(
-        `    [${f.severity.padEnd(7)}] [${conf}] ${f.message}  (${truncate(f.page, 60)})`,
+        `    [${sev}] [${conf}] ${f.message}  (${truncate(f.page, 60)})`,
       );
       if (f.affectedPages && f.affectedPages.length > 1) {
         lines.push(`              also on: ${f.affectedPages.slice(1, 6).map((p) => truncate(p, 50)).join(', ')}${f.affectedPages.length > 6 ? ` …+${f.affectedPages.length - 6}` : ''}`);
@@ -364,6 +382,13 @@ function truncate(s: string, n: number): string {
 export function computeHealthScore(findings: Finding[]): number {
   let score = 100;
   for (const f of findings) {
+    // Skipped checks (e.g. Playwright/Chromium not installed) carry
+    // `severity: 'info'` but represent "scanner couldn't run" rather
+    // than a real defect. Penalising them would push users toward
+    // installing every optional dependency just to protect a number
+    // that has no real meaning for the target site. The `skip-` id
+    // prefix is a stable contract from src/scanners/browser.ts.
+    if (f.id.startsWith('skip-')) continue;
     if (f.severity === 'error') {
       if (f.confidence === 'confirmed') score -= 10;
       else if (f.confidence === 'probable') score -= 5;
@@ -389,6 +414,8 @@ function scoreFormulaBreakdown(findings: Finding[]): {
   let confirmedErrors = 0, probableErrors = 0, inconclusiveErrors = 0;
   let confirmedWarnings = 0, probableWarnings = 0, infos = 0;
   for (const f of findings) {
+    // Skip findings (id prefix `skip-`) don't enter the formula.
+    if (f.id.startsWith('skip-')) continue;
     if (f.severity === 'error') {
       if (f.confidence === 'confirmed') confirmedErrors++;
       else if (f.confidence === 'probable') probableErrors++;
@@ -399,6 +426,28 @@ function scoreFormulaBreakdown(findings: Finding[]): {
     } else if (f.severity === 'info') infos++;
   }
   return { confirmedErrors, probableErrors, inconclusiveErrors, confirmedWarnings, probableWarnings, infos };
+}
+
+/**
+ * Defensive normalisation applied at the start of every renderer. The
+ * orchestrator already calls validateAndSanitize before publication, but
+ * renderText / renderHtml / renderSarif / renderCsv are part of the
+ * public library surface and may be called by consumers with partial
+ * findings (tests, hand-built reports, or older saved reports). We
+ * default missing severity/confidence to the same values the
+ * sanitiser uses, so renderers never crash on undefined methods.
+ */
+const ALLOWED_SEVERITY_RENDER: ReadonlySet<Severity> = new Set(['error', 'warning', 'info']);
+const ALLOWED_CONFIDENCE_RENDER: ReadonlySet<Confidence> = new Set(['confirmed', 'probable', 'inconclusive']);
+
+function normalizeFindingForRender(f: Finding): Finding {
+  const sev = (typeof f.severity === 'string' && ALLOWED_SEVERITY_RENDER.has(f.severity as Severity))
+    ? (f.severity as Severity)
+    : 'warning';
+  const conf = (typeof f.confidence === 'string' && ALLOWED_CONFIDENCE_RENDER.has(f.confidence as Confidence))
+    ? (f.confidence as Confidence)
+    : 'probable';
+  return { ...f, severity: sev, confidence: conf };
 }
 
 /**
@@ -428,7 +477,11 @@ function scoreFormulaString(findings: Finding[]): string {
   return lines.join('\n');
 }
 
-function escapeHtml(s: string): string {
+function escapeHtml(s: string | undefined | null): string {
+  // Defensive: a missing field renders as the literal 'undefined' through
+  // JS template literals. Coerce to empty so the report doesn't print
+  // the substring "undefined" where a value was expected.
+  if (typeof s !== 'string') return '';
   return s.replace(/[&<>"']/g, (c) => {
     switch (c) {
       case '&':
@@ -446,11 +499,14 @@ function escapeHtml(s: string): string {
 }
 
 export function renderHtml(result: ScanResult): string {
-  const findings = result.findings || [];
+  const findings = (result.findings || []).map(normalizeFindingForRender);
   const bySeverity = (s: 'error' | 'warning' | 'info') =>
     findings.filter((f) => f.severity === s).length;
   const byConfidence = (c: Confidence) =>
     findings.filter((f) => f.confidence === c).length;
+  // Skipped checks (e.g. Playwright/Chromium not installed). Stable
+  // contract: id prefix `skip-` from src/scanners/browser.ts.
+  const skippedChecks = findings.filter((f) => f.id.startsWith('skip-')).length;
 
   const linkProbes = (result.cache && result.cache.linkProbes) || 0;
   const assetProbes = (result.cache && result.cache.assetProbes) || 0;
@@ -703,6 +759,7 @@ export function renderHtml(result: ScanResult): string {
     <div class="stat"><div class="v">${result.pagesScanned}</div><div class="l">pages scanned</div></div>
     <div class="stat"><div class="v">${result.pagesFailed || 0}</div><div class="l">pages failed</div></div>
     ${result.pagesSkipped ? `<div class="stat"><div class="v">${result.pagesSkipped}</div><div class="l">pages skipped (robots)</div></div>` : ''}
+    ${result.pagesIncomplete ? `<div class="stat"><div class="v">${result.pagesIncomplete}</div><div class="l">pages incomplete</div></div>` : ''}
     <div class="stat"><div class="v">${urlsChecked}</div><div class="l">URLs checked</div></div>
     <div class="stat error"><div class="v">${bySeverity('error')}</div><div class="l">errors</div></div>
     <div class="stat warning"><div class="v">${bySeverity('warning')}</div><div class="l">warnings</div></div>
@@ -710,6 +767,7 @@ export function renderHtml(result: ScanResult): string {
     <div class="stat confirmed"><div class="v">${byConfidence('confirmed')}</div><div class="l">confirmed</div></div>
     <div class="stat probable"><div class="v">${byConfidence('probable')}</div><div class="l">probable</div></div>
     <div class="stat inconclusive"><div class="v">${byConfidence('inconclusive')}</div><div class="l">inconclusive</div></div>
+    ${skippedChecks > 0 ? `<div class="stat info"><div class="v">${skippedChecks}</div><div class="l">skipped checks</div></div>` : ''}
     <div class="stat ${scoreClass}" title="Heuristic health score">
       <div class="v">${score}</div>
       <div class="l">heuristic score</div>

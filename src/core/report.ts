@@ -104,6 +104,9 @@ export function validateAndSanitize(r: ScanResult): ScanResult {
   if (r.pagesSkipped !== undefined && (!Number.isInteger(r.pagesSkipped) || r.pagesSkipped < 0)) {
     r.pagesSkipped = 0;
   }
+  if (r.pagesIncomplete !== undefined && (!Number.isInteger(r.pagesIncomplete) || r.pagesIncomplete < 0)) {
+    r.pagesIncomplete = 0;
+  }
   if (Array.isArray(r.findings) === false) throw new ReportValidationError('findings must be an array');
   if (Array.isArray(r.errors) === false) throw new ReportValidationError('errors must be an array');
 
@@ -239,12 +242,11 @@ function sanitizeFinding(f: Finding): Finding | null {
  */
 function sanitizeString(s: string, max: number): string {
   if (typeof s !== 'string') return '';
-  // eslint-disable-next-line no-control-regex
   const cleaned = s
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '') // ASCII control (keep \t \n \r)
-    .replace(/[  ]/g, '') // U+2028 / U+2029 line terminators
-    .replace(/[‌‍﻿]/g, '') // U+200B..U+200D, U+2060, U+FEFF
-    .replace(/[‎‏‪-‮﻿]/g, ''); // U+202A..U+202E + U+2066..U+2069 bidi
+    .replace(/[\u2028\u2029]/g, '') // U+2028 / U+2029 line terminators
+    .replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '') // U+200B..U+200D, U+2060, U+FEFF
+    .replace(/[\u200E\u200F\u202A-\u202E\uFEFF]/g, ''); // U+202A..U+202E + U+2066..U+2069 bidi
   return cleaned.length > max ? cleaned.substring(0, max) : cleaned;
 }
 

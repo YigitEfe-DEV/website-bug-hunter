@@ -170,6 +170,15 @@ export interface ScanResult {
   pagesScanned: number;
   pagesFailed: number;
   pagesSkipped: number;
+  /**
+   * Pages that returned 2xx but with an empty / unanalyzable body
+   * (e.g. Content-Type: text/html with 0 bytes, or a body truncated to
+   * nothing by the byte cap). Distinct from `pagesScanned` (which is
+   * "we got a 2xx with real HTML to analyze") and `pagesFailed`
+   * (transport-level failure). Optional for backward compat with
+   * older saved reports.
+   */
+  pagesIncomplete?: number;
   findings: Finding[];
   errors: string[];
   budgetExhausted: boolean;

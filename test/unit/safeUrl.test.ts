@@ -6,9 +6,10 @@ import {
 } from '../../src/fetcher/safeUrl.js';
 
 /**
- * SSRF / DNS rebinding guard rail. Every range called out in Phase 1 R1
- * must be rejected. Public addresses (and the literal external test range)
- * must pass. We use a stubbed resolver so the suite is hermetic.
+ * SSRF / DNS rebinding guard rail. Every private/reserved range called
+ * out in the security review (R1) must be rejected. Public addresses
+ * (and the literal external test range) must pass. We use a stubbed
+ * resolver so the suite is hermetic.
  */
 
 const publicResolver: SafeUrlOptions['resolver'] = async () => [

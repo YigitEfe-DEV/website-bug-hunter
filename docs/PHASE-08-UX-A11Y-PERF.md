@@ -1,6 +1,6 @@
-# Phase 8 — UX, Accessibility, and Focused Performance
+# UX, Accessibility, and Focused Performance
 
-Status: implemented. Tests: deferred to Phase 10 per token policy.
+Status: implemented.
 
 ## What changed
 
@@ -120,6 +120,6 @@ Tradeoffs:
   machine-readable artifacts and have no accessibility surface.
 - `scanRedirects` does not need cheerio; was already a no-load function.
 - The `ProbeCache` semantics (one entry per URL per scan, no cross-
-  target reuse) — the security constraint from Phase 7 stands.
+  target reuse) — the per-scan isolation contract stands.
 - No new dependency. The status-banner `.err` variant and the
   `<details>` styling use existing color tokens.

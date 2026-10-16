@@ -93,8 +93,8 @@ same gate.
   advisory and a fail-open behavior matches the spec's posture.
 
 **Test:** covered transitively via the existing `crawl.test.ts` and the
-`safeUrl.test.ts` deny-list. (Phase 10 to add explicit unit tests for
-the new path.)
+`safeUrl.test.ts` deny-list. (Explicit unit tests for the new path
+are tracked as a follow-up.)
 
 ### 4. `runScan` — BFS orchestration + global budget
 

@@ -63,10 +63,8 @@ export async function scanJsErrors(
   } catch {
     return [skipped(url, 'js_error', 'playwright not installed; JS error scan skipped')];
   }
-  const browser = await playwright.chromium.launch({
-    headless: true,
-    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
-  });
+  const browser = await launchOrSkip(playwright, url, 'js_error');
+  if (!browser) return [skipped(url, 'js_error', 'chromium browser binary not installed; JS error scan skipped')];
   const findings: Finding[] = [];
   try {
     const context = await browser.newContext({ userAgent, javaScriptEnabled: true });
@@ -132,7 +130,9 @@ export async function scanJsErrors(
       });
     }
     for (const r of failedRequests) {
-      const sev = r.status !== null && r.status >= 500 ? 'inconclusive' : 'warning';
+      // 5xx is treated as inconclusive (transient) but stays at warning
+      // severity; "inconclusive" is a confidence level, not a severity.
+      const sev = 'warning';
       const conf: Confidence = r.status !== null && r.status >= 500 ? 'inconclusive' : 'confirmed';
       findings.push({
         id: `jserr-net-${shortHash(r.url + r.status)}`,
@@ -177,10 +177,12 @@ export async function scanMobile(
   } catch {
     return [skipped(url, 'mobile_overflow', 'playwright not installed; mobile scan skipped')];
   }
-  const browser = await playwright.chromium.launch({
-    headless: true,
-    timeout: BROWSER_LAUNCH_TIMEOUT_MS,
-  });
+  const browser = await launchOrSkip(playwright, url, 'mobile_overflow');
+  if (!browser) {
+    return [
+      skipped(url, 'mobile_overflow', 'chromium browser binary not installed; mobile scan skipped'),
+    ];
+  }
   const findings: Finding[] = [];
   try {
     for (const vp of MOBILE_VIEWPORTS) {
@@ -246,8 +248,45 @@ function skipped(url: string, type: 'js_error' | 'mobile_overflow', message: str
     message,
     page: url,
     explanation:
-      'The dynamic scanner could not run because Playwright is not installed. Install it (`npx playwright install chromium`) to enable JS-error and mobile checks.',
+      'The dynamic scanner could not run because Playwright/Chromium is unavailable. Install it (`npx playwright install chromium`) to enable JS-error and mobile checks.',
   };
+}
+
+/**
+ * Launch Chromium. Distinguishes "browser binary missing" (which is
+ * recoverable by the operator via `npx playwright install chromium`)
+ * from real launch failures (sandbox / OS-level issues).
+ *
+ * Returns `null` for the missing-binary case so the caller can emit a
+ * `skipped` finding instead of letting the error propagate to the
+ * orchestrator's "scanner crashed" handler.
+ */
+async function launchOrSkip(
+  playwright: typeof import('playwright'),
+  url: string,
+  type: 'js_error' | 'mobile_overflow',
+): Promise<import('playwright').Browser | null> {
+  try {
+    return await playwright.chromium.launch({
+      headless: true,
+      timeout: BROWSER_LAUNCH_TIMEOUT_MS,
+    });
+  } catch (e) {
+    const msg = (e as Error).message || '';
+    // Playwright throws a plain `Error` with this exact substring when
+    // the cached Chromium binary has not been downloaded yet.
+    if (msg.includes("Executable doesn't exist") || /No executable found/.test(msg)) {
+      logger.warn(
+        { url, type, hint: 'npx playwright install chromium' },
+        'chromium browser binary missing; skipping dynamic scanner',
+      );
+      return null;
+    }
+    // Anything else is a real launch failure (sandbox, missing libs,
+    // GPU init). Re-throw so the orchestrator's catch handler logs it
+    // as a scanner_error — the operator should investigate.
+    throw e;
+  }
 }
 
 function truncate(s: string, n = 240): string {

@@ -12,8 +12,13 @@ export interface FetchOptions {
    * Shared cancellation signal from the orchestrator. The fetch aborts
    * its network I/O when this fires. Timeouts and destination-safety
    * errors share the same cleanup path.
+   *
+   * `| undefined` is explicit because the project compiles with
+   * `exactOptionalPropertyTypes: true`. Callers commonly pass through
+   * a parameter that may itself be undefined; we want that to type-
+   * check, not require every call site to omit the key conditionally.
    */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 }
 
 /**
@@ -163,6 +168,26 @@ function pinAgent(safe: SafeUrlResult): Agent {
  * Single-hop fetch through a per-request dispatcher that pins the
  * resolved IP. Always honors the supplied AbortSignal and the per-
  * request timeout; both routes land on the same finally-cleared timer.
+ *
+ * Error classification: Node's undici surfaces a generic `TypeError:
+ * fetch failed` for every transport-level failure, with the real cause
+ * attached to `error.cause`. We walk the cause chain so a TLS handshake
+ * problem is not reported as a generic "Network error", and a remote
+ * reset during the TLS handshake is not lumped in with a DNS failure.
+ *
+ * Recognized cause codes (undici / Node):
+ *   - UND_ERR_SOCKET       ECONNRESET, "other side closed", TLS close
+ *   - UND_ERR_CONNECT_TIMEOUT
+ *   - UND_ERR_HEADERS_TIMEOUT
+ *   - UND_ERR_BODY_TIMEOUT
+ *   - ERR_SSL_* / UND_ERR_PRX_TLS   TLS handshake / cert failure
+ *   - ENOTFOUND / EAI_AGAIN         DNS resolution failure (defense
+ *                                   layer is in `safeUrl.ts`; this is
+ *                                   only reached for hostname-literal
+ *                                   cases that somehow bypassed)
+ *
+ * Anything else falls through to a generic NETWORK classification so
+ * the operator can still tell the scan is incomplete.
  */
 async function rawFetch(
   safe: SafeUrlResult,
@@ -190,17 +215,105 @@ async function rawFetch(
       },
     });
   } catch (e) {
-    const msg = (e as Error).message || 'unknown';
-    if (msg.includes('abort') || ac.signal.aborted) {
-      throw new FetchError('TIMEOUT', `Fetch timed out or aborted after ${opts.timeoutMs}ms`);
-    }
-    throw new FetchError('NETWORK', `Network error: ${msg}`);
+    const classified = classifyFetchError(e as Error, ac.signal, opts.timeoutMs);
+    throw classified;
   } finally {
     clearTimeout(timer);
     if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
     // Tear down the per-hop dispatcher so its sockets are released.
     dispatcher.close().catch(() => {});
   }
+}
+
+/**
+ * Map a thrown fetch error to a stable `FetchError` code.
+ *
+ * `fetch failed` is undici's wrapper; the underlying cause lives at
+ * `cause` and may itself carry a `cause` (e.g. TLS errors wrap an
+ * OpenSSL error which wraps a socket error). We walk the chain until
+ * we find a recognizable code or message, then fall back to NETWORK.
+ *
+ * We never re-throw the underlying Error so the orchestrator cannot
+ * accidentally serialize a stack trace into the report.
+ */
+function classifyFetchError(e: Error, signal: AbortSignal, timeoutMs: number): FetchError {
+  if (signal.aborted) {
+    return new FetchError('TIMEOUT', `Fetch timed out or aborted after ${timeoutMs}ms`);
+  }
+  // Walk the cause chain (max 4 hops — TLS errors can nest deeply).
+  let cur: Error | { name?: string; code?: string; message?: string } | undefined = e;
+  let undCode: string | undefined;
+  let sysCode: string | undefined;
+  let lastMessage = '';
+  let isSsl = false;
+  let isSocketReset = false;
+  for (let hop = 0; hop < 4 && cur; hop++) {
+    const obj = cur as { name?: string; code?: string; message?: string; cause?: unknown };
+    if (typeof obj.code === 'string') {
+      if (obj.code.startsWith('UND_ERR_')) {
+        undCode = obj.code;
+      } else {
+        sysCode = obj.code;
+      }
+    }
+    const msg = obj.message ?? '';
+    if (msg) lastMessage = msg;
+    const lower = msg.toLowerCase();
+    if (
+      obj.code === 'ERR_SSL_WRONG_VERSION_NUMBER' ||
+      obj.code === 'ERR_TLS_CERT_ALTNAME_INVALID' ||
+      obj.code?.startsWith('ERR_SSL_') ||
+      obj.code?.startsWith('ERR_TLS_') ||
+      obj.code === 'UND_ERR_PRX_TLS' ||
+      lower.includes('ssl') ||
+      lower.includes('tls') ||
+      lower.includes('certificate')
+    ) {
+      isSsl = true;
+    }
+    if (
+      obj.code === 'ECONNRESET' ||
+      lower.includes('econnreset') ||
+      lower.includes('connection reset') ||
+      lower.includes('other side closed') ||
+      lower.includes('socket hang up')
+    ) {
+      isSocketReset = true;
+    }
+    cur = obj.cause as Error | undefined;
+  }
+  // Aborted via signal — covers the case where the abort came from the
+  // caller's signal rather than our timeout.
+  if (e.name === 'AbortError' || sysCode === 'ABORT_ERR') {
+    return new FetchError('TIMEOUT', `Fetch aborted after ${timeoutMs}ms`);
+  }
+  if (undCode === 'UND_ERR_CONNECT_TIMEOUT') {
+    return new FetchError('CONNECT_TIMEOUT', `Connect timed out after ${timeoutMs}ms`);
+  }
+  if (
+    undCode === 'UND_ERR_HEADERS_TIMEOUT' ||
+    undCode === 'UND_ERR_BODY_TIMEOUT'
+  ) {
+    return new FetchError('TIMEOUT', `Response timed out after ${timeoutMs}ms`);
+  }
+  if (isSsl) {
+    return new FetchError('TLS_ERROR', `TLS error: ${truncate(lastMessage, 200)}`);
+  }
+  if (isSocketReset || undCode === 'UND_ERR_SOCKET') {
+    return new FetchError(
+      'CONNECTION_RESET',
+      `Connection reset by peer: ${truncate(lastMessage, 200)}`,
+    );
+  }
+  if (sysCode === 'ENOTFOUND' || sysCode === 'EAI_AGAIN') {
+    return new FetchError('DNS_FAIL', `DNS failure: ${truncate(lastMessage, 200)}`);
+  }
+  return new FetchError('NETWORK', `Network error: ${truncate(lastMessage || e.message || 'unknown', 200)}`);
+}
+
+function truncate(s: string, max: number): string {
+  if (typeof s !== 'string') return '';
+  return s.length > max ? s.substring(0, max) + '…' : s;
 }
 
 async function readWithCap(

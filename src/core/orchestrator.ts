@@ -75,6 +75,10 @@ export async function runScan(
   let pagesScanned = 0;
   let pagesFailed = 0;
   let pagesSkipped = 0;
+  // Pages that returned 2xx but with an empty / unanalyzable body.
+  // Tracked separately from `pagesScanned` so the counters match what
+  // actually got analyzed vs. what was merely received.
+  let pagesIncomplete = 0;
   let requestsMade = 0;
   let budgetExhausted = false;
   const MAX_ERRORS = 200;
@@ -191,29 +195,17 @@ export async function runScan(
         pagesFailed++;
         const errMsg = `${truncate(r.item.url, 2048)}: ${r.msg}`;
         if (errors.length < MAX_ERRORS) errors.push(errMsg);
+        const { explanation, fix } = explainRequestFailure(r.error);
         const requestFailure: Finding = {
           id: `reqfail-${shortHash(r.item.url + r.error)}`,
           type: 'request_failed',
           severity: 'error',
-          confidence: r.error === 'TIMEOUT' || r.error === 'UNKNOWN' ? 'inconclusive' : 'confirmed',
+          confidence: isTransientRequestFailure(r.error) ? 'inconclusive' : 'confirmed',
           message: `Request failed (${r.error}): ${truncate(r.item.url, 2048)}`,
           page: r.item.url,
           detail: { code: r.error },
-          explanation:
-            r.error === 'TIMEOUT'
-              ? 'The host did not respond within the scan timeout. May be transient.'
-              : r.error === 'REDIRECT_LOOP'
-                ? 'A redirect chain loops. Inspect Location headers along the chain.'
-                : r.error === 'PRIVATE_IP' || r.error === 'BLOCKED_HOSTNAME'
-                  ? 'The scanner refused to fetch this URL — it resolves to a private/loopback/blocked range (SSRF guard).'
-                  : 'The scanner could not complete this request.',
-          fix: r.error === 'TIMEOUT'
-            ? 'The host is slow or unreachable. Investigate or exclude this URL from scans.'
-            : r.error === 'REDIRECT_LOOP'
-              ? 'A redirect chain loops. Inspect Location headers along the chain.'
-              : r.error === 'PRIVATE_IP' || r.error === 'BLOCKED_HOSTNAME'
-                ? 'If the target is intentional, re-run with --allow-private and accept the risk.'
-                : 'Check that the host is reachable from the public internet.',
+          explanation,
+          fix,
         };
         findings.push(requestFailure);
         progress?.emit({
@@ -228,6 +220,53 @@ export async function runScan(
       }
       pagesScanned++;
       const page: CrawledPage = r.page;
+      // Empty body guard: a 2xx response with a text/html Content-Type
+      // but zero bytes is not analyzable. Rather than emit a flood of
+      // `meta_missing` findings (which would imply the page is broken
+      // when in fact we received nothing to inspect), we report a
+      // single inconclusive EMPTY_BODY finding and skip the HTML-based
+      // scanners. Redirects are still emitted from the status chain.
+      // The page does NOT count as `pagesScanned` (we never analyzed
+      // it) and is reflected in the separate `pagesIncomplete` counter
+      // so the metrics line up with the finding.
+      if (page.isHtml && page.html.length === 0) {
+        // Roll back the optimistic pagesScanned++ since we will not
+        // actually analyze this page. Net result: pagesScanned counts
+        // pages we successfully analyzed; pagesIncomplete counts the
+        // rest of the 2xx responses.
+        pagesScanned--;
+        pagesIncomplete++;
+        const emptyBodyFinding: Finding = {
+          id: `emptybody-${shortHash(page.finalUrl)}`,
+          type: 'request_failed',
+          severity: 'warning',
+          confidence: 'inconclusive',
+          message: `Empty HTML body: ${truncate(page.finalUrl, 2048)}`,
+          page: page.finalUrl,
+          detail: { code: 'EMPTY_BODY', status: page.status, bytes: page.bytes },
+          explanation:
+            'The server returned a 2xx response with an HTML Content-Type but no body. The page could not be analyzed.',
+          fix: 'Investigate manually; the response may have been truncated or returned by a misbehaving origin.',
+        };
+        findings.push(emptyBodyFinding);
+        progress?.emit({
+          kind: 'finding',
+          type: emptyBodyFinding.type,
+          severity: emptyBodyFinding.severity,
+          message: emptyBodyFinding.message,
+        });
+        // Still record the page in `result.pages` for the operator.
+        crawledPages.push(page);
+        progress?.emit({
+          kind: 'page-scanned',
+          url: r.item.url,
+          status: page.status,
+          pagesScanned,
+          pagesFailed,
+          queueSize: frontier.length,
+        });
+        continue;
+      }
       crawledPages.push(page);
       // Parse the page HTML once per crawl. Every static scanner that
       // needs cheerio (link extraction, image probing rules, meta check,
@@ -271,7 +310,10 @@ export async function runScan(
   }
 
   const pageMetas = crawledPages
-    .map(extractMeta)
+    // extractMeta now accepts a preloadedCheerio second parameter; wrap the
+    // call so Array.prototype.map's (value, index, array) callback shape
+    // is preserved when nothing was pre-parsed per page.
+    .map((p) => extractMeta(p))
     .filter((m): m is NonNullable<typeof m> => m !== null);
   const dupFindings = detectDuplicates(pageMetas);
   for (const f of dupFindings) {
@@ -303,6 +345,7 @@ export async function runScan(
     pagesScanned,
     pagesFailed,
     pagesSkipped,
+    pagesIncomplete,
     findings: dedupeFindings(findings),
     errors,
     budgetExhausted,
@@ -353,6 +396,8 @@ async function scanOne(
     Promise.resolve(scanRedirects(page)),
     Promise.resolve(scanAccessibility(page, preloadedCheerio)),
   ]);
+  // (linkRes.findings already includes any scanner_error emitted inline;
+  // the orchestrator's outer crash handler covers true crashes only.)
   return [
     ...linkRes.findings,
     ...imageRes.findings,
@@ -408,6 +453,112 @@ function shortHash(s: string): string {
   return h.toString(36);
 }
 
+/**
+ * Confidence for `request_failed` findings.
+ *
+ * Transport-layer failures (timeout, reset, TLS, DNS, ECONNREFUSED-style
+ * "no listener", unknown) are intrinsically transient — the scanner
+ * cannot tell from a single probe whether the destination is permanently
+ * down or just momentarily unreachable. They must NOT be reported as
+ * `confirmed` defects, or operators will start filing false bugs.
+ *
+ * The codes that mark `confirmed` are the scanner-side gates (SSRF
+ * denials, unsafe redirects, malformed URLs): those reflect a real
+ * problem with the URL itself, not the destination's health.
+ */
+function isTransientRequestFailure(code: string): boolean {
+  switch (code) {
+    case 'TIMEOUT':
+    case 'CONNECT_TIMEOUT':
+    case 'CONNECTION_RESET':
+    case 'TLS_ERROR':
+    case 'DNS_FAIL':
+    case 'NETWORK':
+    case 'UNKNOWN':
+    case 'CANCELLED':
+    case 'EMPTY_BODY':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Per-code user-facing copy for `request_failed` findings. Each entry is
+ * the explanation + fix the operator sees in the report. Codes not in
+ * the map get a generic but accurate message so we never over-claim.
+ */
+function explainRequestFailure(code: string): { explanation: string; fix: string } {
+  switch (code) {
+    case 'TIMEOUT':
+      return {
+        explanation: 'The host did not respond within the scan timeout. May be transient.',
+        fix: 'The host is slow or unreachable. Investigate or exclude this URL from scans.',
+      };
+    case 'CONNECT_TIMEOUT':
+      return {
+        explanation:
+          'The TCP/TLS handshake to the host did not complete within the scan timeout. The host may be unreachable or rate-limiting connections.',
+        fix: 'Retry the scan. If the timeout persists, the host may be down or blocking the scanner.',
+      };
+    case 'CONNECTION_RESET':
+      return {
+        explanation:
+          'The remote closed the connection during the request. Common causes: an upstream firewall reset the TCP stream, the TLS handshake was abandoned, or the origin is anti-bot blocking.',
+        fix: 'Retry once; if the reset persists, investigate the host (firewall, anti-bot, expired TLS cert).',
+      };
+    case 'TLS_ERROR':
+      return {
+        explanation:
+          'The TLS handshake failed (expired/invalid certificate, unsupported protocol, or SNI mismatch). The scanner did not exchange application data.',
+        fix: 'Verify the host has a valid certificate and supports a modern TLS version. Self-signed or mismatched certs require explicit opt-in elsewhere.',
+      };
+    case 'DNS_FAIL':
+      return {
+        explanation: 'The hostname did not resolve via DNS. The destination is unreachable as far as end users are concerned.',
+        fix: 'Check the hostname spelling and DNS records. If the destination moved, update the URL.',
+      };
+    case 'REDIRECT_LOOP':
+      return {
+        explanation: 'A redirect chain loops. Inspect Location headers along the chain.',
+        fix: 'Inspect the Location headers along the chain and break the loop.',
+      };
+    case 'PRIVATE_IP':
+    case 'BLOCKED_HOSTNAME':
+      return {
+        explanation:
+          'The scanner refused to fetch this URL — it resolves to a private/loopback/blocked range (SSRF guard).',
+        fix: 'If the target is intentional, re-run with --allow-private and accept the risk.',
+      };
+    case 'BAD_LOCATION':
+      return {
+        explanation:
+          'The server returned a Location header that did not form a valid URL.',
+        fix: 'Inspect the redirect target and fix the malformed Location header.',
+      };
+    case 'UNSAFE_URL':
+    case 'UNSAFE_REDIRECT':
+      return {
+        explanation:
+          'The URL failed the safety gate (scheme/host/parse/length). The scanner did not attempt the request.',
+        fix: 'Verify the URL is a well-formed http(s) URL pointing at a public host.',
+      };
+    case 'CANCELLED':
+      return {
+        explanation: 'The fetch was cancelled (orchestrator budget or caller signal).',
+        fix: 'No action; the scan was interrupted on purpose.',
+      };
+    case 'NETWORK':
+    case 'UNKNOWN':
+    default:
+      return {
+        explanation:
+          'The scanner could not complete this request. The destination may be unreachable from this network.',
+        fix: 'Retry; if it fails consistently, the host may be unreachable from your environment (firewall, geo-block, or transient outage).',
+      };
+  }
+}
+
 /** Cap arbitrary strings (URLs, error messages) before they enter a report. */
 function truncate(s: string, max: number): string {
   if (typeof s !== 'string') return '';
@@ -425,9 +576,8 @@ function truncate(s: string, max: number): string {
 function redactErrorMessage(msg: string): string {
   if (typeof msg !== 'string') return '';
   let s = msg
-    // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-    .replace(/[  ]/g, '');
+    .replace(/[\u2028\u2029]/g, '');
   // Strip "    at func (file.js:123:45)" stack frames.
   s = s.replace(/\s+at\s+.+?\(.*?:\d+:\d+\)/g, '');
   if (s.length > 240) s = s.substring(0, 240) + '…';

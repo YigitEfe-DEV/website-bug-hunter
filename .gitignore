@@ -1,7 +1,45 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Test artefacts (vitest coverage, etc.)
+coverage/
+
+# Local env / secrets — never commit
 .env
 .env.local
-*.log
+.env.*.local
+
+# Editor / OS
 .DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# pnpm
 .pnpm-store/
+
+# Build cache (tsc)
+*.tsbuildinfo
+
+# Sample / generated reports in the working tree (keep them out of git;
+# the test fixture server writes here in some flows)
+*.report.json
+*.report.html
+*.report.csv
+*.report.sarif
+*.report.txt
+
+# Root-level generated report (from a local run, never committed)
+report.html
+
+# Internal development scaffolding (phase prompts / templates) — not part of the product
+_phases/

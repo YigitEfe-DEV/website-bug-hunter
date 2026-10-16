@@ -203,7 +203,7 @@ function findingFromRecord(r: LinkRecord): Finding | null {
       fix = 'Remove the link or replace it with the correct URL. If the destination moved, add a redirect at the source or update the URL.';
     } else if (r.status === 403) {
       explanation = `The server explicitly forbids access. The destination exists but is not publicly reachable.`;
-      fix = 'Verify the URL is intended to be public. If not, remove it. If yes, investigate why access is forbidden.`;
+      fix = 'Verify the URL is intended to be public. If not, remove it. If yes, investigate why access is forbidden.';
     } else if (r.status === 410) {
       explanation = `The server reports the resource is permanently gone.`;
       fix = 'Remove the link; do not redirect to a 410 target.';

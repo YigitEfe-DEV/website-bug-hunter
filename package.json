@@ -39,7 +39,8 @@
     "cheerio": "1.0.0",
     "commander": "12.1.0",
     "p-limit": "6.1.0",
-    "pino": "9.5.0"
+    "pino": "9.5.0",
+    "undici": "^7.30.1"
   },
   "optionalDependencies": {
     "playwright": "1.49.1"

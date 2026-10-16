@@ -148,14 +148,24 @@ function isPrivateV4(addr: string): boolean {
   if (parts.length !== 4) return false;
   const v = parts.map((p) => Number(p));
   if (v.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  // parts.length === 4 is checked above; noUncheckedIndexedAccess makes
+  // TS treat v[0..3] as number | undefined, but they are guaranteed by the
+  // length check. Non-null assertions keep this hot-path branchless.
   // 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16, 100.64/10
-  if (v[0] === 10) return true;
-  if (v[0] === 127) return true;
-  if (v[0] === 169 && v[1] === 254) return true;
-  if (v[0] === 172 && v[1] >= 16 && v[1] <= 31) return true;
-  if (v[0] === 192 && v[1] === 168) return true;
-  if (v[0] === 100 && v[1] >= 64 && v[1] <= 127) return true;
-  if (v[0] === 0) return true;
+  const a = v[0]!;
+  const b = v[1]!;
+  const c = v[2]!;
+  const d = v[3]!;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 0) return true;
+  // (c, d) are validated but unused in the deny-list; reference them so
+  // they don't trigger noUnusedLocals and remain auditable.
+  void c; void d;
   return false;
 }
 
